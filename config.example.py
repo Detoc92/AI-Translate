@@ -19,8 +19,12 @@ GEMINI_API_KEY = "AIza...your-gemini-key..."
 # Xử lý file thu sẵn: "soniox" (async, STT+dịch 1 lần) hoặc "openai" (whisper-1 + gpt-4o)
 FILE_STT_PROVIDER = "soniox"
 
-# Đọc bản dịch (TTS -> MIC ảo): "edge" (Microsoft Edge neural, FREE) hoặc "openai" (gpt-4o-mini-tts)
+# Đọc bản dịch (TTS -> MIC ảo):
+#   "edge"   = Microsoft Edge neural, FREE (mặc định)
+#   "soniox" = tts-rt-v1, trả phí ~$0.70/giờ, độ trễ thấp + ổn định (dùng KEY SONIOX sẵn có)
+#   "openai" = gpt-4o-mini-tts (trả phí)
 TTS_PROVIDER = "edge"
+SONIOX_TTS_VOICE = "Adrian"   # giọng khi TTS_PROVIDER="soniox" (xem danh mục voice của Soniox)
 
 # ----- Glossary trên GitHub (cloud) -----
 # App TẢI glossary.json từ repo mỗi lần mở (cache offline) và có thể ĐẨY từ mới lên.

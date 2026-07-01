@@ -1876,6 +1876,8 @@ class App(ctk.CTk):
         provider = getattr(config, "TTS_PROVIDER", "openai")
         if provider == "edge":
             pcm = self._synth_edge(text, lang_code, speed, voice)
+        elif provider == "soniox":
+            pcm = self._synth_soniox(text, lang_code)
         else:
             pcm = self._synth_openai(text, speed)
         n = len(pcm) - (len(pcm) % 2)
@@ -1892,6 +1894,21 @@ class App(ctk.CTk):
             threads.append(t)
         for t in threads:      # chờ phát xong để giữ thứ tự đọc nối tiếp giữa các câu
             t.join()
+
+    def _synth_soniox(self, text, lang_code="en"):
+        """TTS Soniox tts-rt-v1 -> PCM 24kHz 16-bit mono (trả phí ~$0.70/giờ, dùng KEY SONIOX sẵn có).
+        Trả thẳng PCM s16le 24kHz nên khớp pipeline (không cần decode/resample như Edge)."""
+        import httpx
+        api_key = getattr(config, "SONIOX_API_KEY", "") or ""
+        voice = getattr(config, "SONIOX_TTS_VOICE", "") or "Adrian"
+        lang = lang_code if (lang_code and lang_code != "auto") else "en"
+        body = {"model": "tts-rt-v1", "language": lang, "voice": voice,
+                "audio_format": "pcm_s16le", "sample_rate": 24000, "text": text}
+        with httpx.Client(timeout=30) as h:
+            r = h.post("https://tts-rt.soniox.com/tts",
+                       headers={"Authorization": f"Bearer {api_key}"}, json=body)
+            r.raise_for_status()
+            return r.content
 
     def _synth_openai(self, text, speed=1.0):
         """TTS OpenAI gpt-4o-mini-tts -> PCM 24kHz 16-bit mono (trả phí)."""
