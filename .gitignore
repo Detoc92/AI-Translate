@@ -1,5 +1,6 @@
-# ===== BÍ MẬT — TUYỆT ĐỐI KHÔNG commit (chứa API key) =====
+# ===== BÍ MẬT — TUYỆT ĐỐI KHÔNG commit (chứa API key/token) =====
 config.py
+github_token.txt
 
 # ===== Đóng gói / build =====
 dist/

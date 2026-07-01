@@ -53,13 +53,34 @@ def _gh(attr, default):
     return getattr(config, attr, default) or default
 
 
+def _github_token():
+    """Token GitHub để ĐẨY thuật ngữ mới lên cloud. Nạp theo thứ tự ưu tiên (2 cách đầu
+    KHÔNG cần build lại exe & KHÔNG bị đóng gói vào exe → an toàn hơn):
+      1) biến môi trường AVBUDS_GH_TOKEN
+      2) file 'github_token.txt' đặt CẠNH app (.exe) — mỗi máy tự bỏ token của mình
+      3) config.GLOSSARY_GITHUB_TOKEN (chạy từ nguồn)"""
+    t = (os.environ.get("AVBUDS_GH_TOKEN", "") or "").strip()
+    if t:
+        return t
+    try:
+        p = os.path.join(_app_dir(), "github_token.txt")
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+            if t:
+                return t
+    except Exception:
+        pass
+    return (getattr(config, "GLOSSARY_GITHUB_TOKEN", "") or "").strip()
+
+
 def github_glossary_fetch(timeout=6):
     """Tải glossary.json từ GitHub. Có token -> Contents API (đọc cả repo private); không ->
     raw URL (repo public). Trả (data_dict, sha) hoặc (None, None)."""
     repo = _gh("GLOSSARY_GITHUB_REPO", "Detoc92/AI-Translate")
     branch = _gh("GLOSSARY_GITHUB_BRANCH", "main")
     path = _gh("GLOSSARY_GITHUB_PATH", "glossary.json")
-    token = getattr(config, "GLOSSARY_GITHUB_TOKEN", "") or ""
+    token = _github_token()
     try:
         if token:
             url = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
@@ -81,9 +102,9 @@ def github_glossary_fetch(timeout=6):
 
 def github_glossary_push(data_dict, message="update glossary via app"):
     """Đẩy glossary.json lên GitHub (Contents API, CẦN token). Trả (ok, new_sha|errmsg)."""
-    token = getattr(config, "GLOSSARY_GITHUB_TOKEN", "") or ""
+    token = _github_token()
     if not token:
-        return False, "Chưa cấu hình GLOSSARY_GITHUB_TOKEN trong config.py"
+        return False, "Chưa có token (AVBUDS_GH_TOKEN / github_token.txt / config.GLOSSARY_GITHUB_TOKEN)"
     repo = _gh("GLOSSARY_GITHUB_REPO", "Detoc92/AI-Translate")
     branch = _gh("GLOSSARY_GITHUB_BRANCH", "main")
     path = _gh("GLOSSARY_GITHUB_PATH", "glossary.json")
@@ -2161,8 +2182,9 @@ class App(ctk.CTk):
 
     def _cloud_push_glossary(self, message):
         """Đẩy self.glossary lên GitHub (luồng nền) nếu đã cấu hình token; nếu chưa thì chỉ báo."""
-        if not (getattr(config, "GLOSSARY_GITHUB_TOKEN", "") or ""):
-            logger.info("ℹ️ [GLOSSARY] Đã lưu cục bộ. Chưa có GLOSSARY_GITHUB_TOKEN → KHÔNG đẩy lên cloud.")
+        if not _github_token():
+            logger.info("ℹ️ [GLOSSARY] Đã lưu cục bộ. Chưa có token (AVBUDS_GH_TOKEN / github_token.txt / "
+                        "config.GLOSSARY_GITHUB_TOKEN) → KHÔNG đẩy lên cloud.")
             return
 
         def work():
@@ -2368,8 +2390,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(win,
                      text="ℹ️ App tải glossary từ GitHub mỗi lần mở (cache offline). Thuật ngữ mới →\n"
                           "dùng ở lần START kế; từ đã 'dạy' → sửa ngay câu vừa chốt.\n"
-                          "☁️ Có GLOSSARY_GITHUB_TOKEN trong config.py → thêm từ sẽ TỰ ĐẨY lên cloud\n"
-                          "cho mọi máy. Chưa có token → chỉ lưu cục bộ (gửi admin cập nhật repo).",
+                          "☁️ Có token (file github_token.txt cạnh app / env AVBUDS_GH_TOKEN /\n"
+                          "config.py) → thêm từ TỰ ĐẨY lên cloud cho mọi máy. Chưa có → chỉ lưu cục bộ.",
                      text_color=COLOR_TEXT_DRAFT, font=("Arial", 9), justify="left").pack(pady=(6, 8), padx=16, anchor="w")
 
         def refresh_all():

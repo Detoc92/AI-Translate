@@ -31,6 +31,8 @@ SONIOX_TTS_VOICE = "Adrian"   # giọng khi TTS_PROVIDER="soniox" (xem danh mụ
 GLOSSARY_GITHUB_REPO = "Detoc92/AI-Translate"   # owner/repo chứa glossary.json
 GLOSSARY_GITHUB_BRANCH = "main"
 GLOSSARY_GITHUB_PATH = "glossary.json"
-# Personal Access Token (scope: repo hoặc Contents:write) để THÊM từ mới lên cloud.
-# ĐỂ TRỐNG = chỉ ĐỌC (tải về), không đẩy lên. Token này KHÔNG commit (nằm trong config.py).
+# Personal Access Token (fine-grained, quyền Contents:write cho repo) để THÊM từ mới lên cloud.
+# ĐỂ TRỐNG = chỉ ĐỌC (tải về). App tìm token theo thứ tự: env AVBUDS_GH_TOKEN →
+# file 'github_token.txt' CẠNH .exe (khuyến nghị khi dùng bản đóng gói, không phải build lại)
+# → biến này. Token KHÔNG commit (đã .gitignore).
 GLOSSARY_GITHUB_TOKEN = ""
