@@ -212,6 +212,13 @@ INCOMING_OFF = "Off — only my voice"
 INCOMING_TEXT = "Show text (partner also uses app)"
 INCOMING_TRANSLATE = "Full translate (partner has no app)"
 
+# Chế độ hoạt động tổng (chống loop tận gốc khi 2 máy):
+#  - APP_MODE_TEXT: cả 2 bên dùng app → CHỈ hiện text (KHÔNG phát TTS vào cable) → không có âm
+#      thanh tổng hợp chạy vào cuộc gọi → KHÔNG THỂ loop. Nói giọng thật qua mic thật của cuộc gọi.
+#  - APP_MODE_VOICE: chỉ mình tôi dùng app → TTS → cable cho đối tác (không có app) nghe.
+APP_MODE_TEXT = "📝 Cả 2 dùng app — chỉ hiện text (chống loop)"
+APP_MODE_VOICE = "🔊 Chỉ mình tôi — đọc tiếng cho đối tác"
+
 ctk.set_appearance_mode("light")
 
 COLOR_BG = "#1E293B"
@@ -938,6 +945,17 @@ class App(ctk.CTk):
         # ===== ĐỌC BẢN DỊCH CHO NGƯỜI NGHE (TTS → loa thật / MIC ảo) =====
         tts_frame = ctk.CTkFrame(top_side, fg_color="#0F172A", corner_radius=8)
         tts_frame.pack(pady=8, padx=20, fill="x")
+        # CHẾ ĐỘ: 2 máy chỉ hiện text (chống loop tận gốc) vs 1 máy đọc tiếng cho đối tác.
+        self.app_mode_var = ctk.StringVar(value=APP_MODE_TEXT)
+        ctk.CTkLabel(tts_frame, text="🧩 Chế độ dịch:", text_color="#FBBF24",
+                     font=("Arial", 11, "bold")).pack(pady=(8, 0), padx=10, anchor="w")
+        ctk.CTkOptionMenu(tts_frame, variable=self.app_mode_var,
+                          values=[APP_MODE_TEXT, APP_MODE_VOICE], command=self._on_app_mode_change,
+                          fg_color="#7C3AED", button_color="#6D28D9", font=("Arial", 10),
+                          dynamic_resizing=False).pack(pady=(2, 2), padx=10, fill="x")
+        self.app_mode_note = ctk.CTkLabel(tts_frame, text="", text_color=COLOR_TEXT_DRAFT,
+                                          font=("Arial", 9), justify="left")
+        self.app_mode_note.pack(pady=(0, 6), padx=10, anchor="w")
         self.tts_var = ctk.BooleanVar(value=False)
         ctk.CTkSwitch(tts_frame, text="🔊 Read translation to the listener", variable=self.tts_var,
                       command=self._on_tts_toggle,
@@ -1054,6 +1072,8 @@ class App(ctk.CTk):
         ctk.CTkButton(acts, text="📊 SUMMARY", command=lambda: self.generate_summary(final=True), fg_color="#F59E0B", font=("Arial", 14, "bold"), width=180).pack(side="left")
         ctk.CTkButton(acts, text="🚀 START", command=self.start_engine, fg_color=COLOR_BTN, font=("Arial", 14, "bold"), width=120).pack(side="right", padx=5)
         ctk.CTkButton(acts, text="⏹️ STOP", command=self.stop_engine, fg_color=COLOR_STOP, font=("Arial", 14, "bold"), width=120).pack(side="right", padx=5)
+
+        self._on_app_mode_change()   # set ghi chú chế độ ban đầu
 
     @staticmethod
     def _probe_mic(dev):
@@ -1191,10 +1211,9 @@ class App(ctk.CTk):
                                 else:
                                     diag(f"[{lane}] audio OFF rms={_rms:.4f} dev='{dev_name}'")
                                 _diag_prev = _act
-                        # BUG2 — MUTE LUỒNG NÓI: khi TẮT "Đọc bản dịch cho người nghe"
-                        # thì coi như tắt hẳn mic của tôi (không thu → không dịch → không
-                        # in ra màn hình → không gửi đi). Bật lại là chạy ngay, không cần START lại.
-                        if q is audio_queue and not self.tts_var.get():
+                        # MUTE LUỒNG NÓI chỉ ở chế độ VOICE khi TẮT "Đọc bản dịch": coi như tắt mic.
+                        # Ở chế độ TEXT thì VẪN xử lý luồng NÓI để HIỆN CHỮ dịch (chỉ không phát TTS).
+                        if q is audio_queue and self._is_voice_mode() and not self.tts_var.get():
                             continue
                         # HALF-DUPLEX GATE (mấu chốt chống loop 2 máy khi MIC ≡ LOA cùng 1 tai nghe):
                         # khi luồng NGHE vừa có tiếng (đối tác/echo phát ra tai nghe) → KHÓA mic NÓI.
@@ -1823,6 +1842,22 @@ class App(ctk.CTk):
         else:
             logger.info("🔇 Translation reading turned off.")
 
+    def _is_voice_mode(self):
+        return getattr(self, "app_mode_var", None) is not None and self.app_mode_var.get() == APP_MODE_VOICE
+
+    def _on_app_mode_change(self, _v=None):
+        """Đổi chế độ: TEXT (2 máy, chỉ hiện chữ, KHÔNG TTS → chống loop) vs VOICE (đọc tiếng)."""
+        if self._is_voice_mode():
+            note = ("Chỉ MÌNH bạn dùng app. Bật '🔊 Read translation' để đọc tiếng cho đối tác.\n"
+                    "→ MIC cuộc gọi = CABLE Output.")
+            logger.info("🔊 Chế độ VOICE — đọc tiếng dịch vào CABLE cho đối tác (không có app).")
+        else:
+            note = ("Cả 2 bên dùng app. KHÔNG phát tiếng — chỉ HIỆN CHỮ dịch → không thể loop.\n"
+                    "→ MIC cuộc gọi = MIC THẬT (nói giọng thật), KHÔNG phải CABLE.")
+            logger.info("📝 Chế độ TEXT — cả 2 chỉ hiện chữ, không TTS vào cuộc gọi → chống loop tận gốc.")
+        if getattr(self, "app_mode_note", None) is not None:
+            self.app_mode_note.configure(text=note)
+
     def _on_monitor_toggle(self):
         """Bật/tắt 'Tôi cũng nghe'. Vì monitor chỉ phát khi có CÂU DỊCH MỚI, lúc bật
         ta phát 1 tiếng bíp thử NGAY ra loa monitor để xác nhận nghe được (không phải
@@ -2240,7 +2275,8 @@ class App(ctk.CTk):
 
     def _pump_tts(self):
         """Phát hiện block dịch vừa chốt và đẩy vào hàng đợi TTS. Gọi trong update_ui_loop."""
-        on_out = self.tts_var.get()
+        # Chỉ phát TTS vào cable ở chế độ VOICE. TEXT mode = KHÔNG TTS (chống loop tận gốc).
+        on_out = self._is_voice_mode() and self.tts_var.get()
         two_way = self.direction_var.get() == "2 chiều"
         # Chỉ đọc-to tiếng đối tác khi đang DỊCH đầy đủ (Full translate). Ở chế độ Show-text
         # (_incoming_translate is False) tuyệt đối KHÔNG đọc-to → tránh loop.
