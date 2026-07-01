@@ -232,11 +232,11 @@ def edge_voice_from_label(lang_code, label):
 # thứ tiếng) — nên đây là 3 giọng CHỌN SẴN hợp mỗi ngôn ngữ (cân bằng nam/nữ), giọng nào
 # cũng đọc được ngôn ngữ đó. (nhãn_hiển_thị, tên_giọng). Giọng ĐẦU = mặc định.
 SONIOX_VOICE_CHOICES = {
-    "en": [("Adrian (nam)", "Adrian"), ("Emma (nữ)", "Emma"), ("Oliver (nam)", "Oliver")],
-    "ko": [("Mina (nữ)", "Mina"), ("Noah (nam)", "Noah"), ("Grace (nữ)", "Grace")],
-    "ja": [("Kenji (nam)", "Kenji"), ("Mina (nữ)", "Mina"), ("Emma (nữ)", "Emma")],
-    "zh": [("Grace (nữ)", "Grace"), ("Owen (nam)", "Owen"), ("Nina (nữ)", "Nina")],
-    "vi": [("Emma (nữ)", "Emma"), ("Adrian (nam)", "Adrian"), ("Mina (nữ)", "Mina")],
+    "en": [("Adrian (nam)", "Adrian"), ("Oliver (nam)", "Oliver"), ("Noah (nam)", "Noah"), ("Emma (nữ)", "Emma")],
+    "ko": [("Noah (nam)", "Noah"), ("Daniel (nam)", "Daniel"), ("Owen (nam)", "Owen"), ("Mina (nữ)", "Mina")],
+    "ja": [("Kenji (nam)", "Kenji"), ("Noah (nam)", "Noah"), ("Owen (nam)", "Owen"), ("Mina (nữ)", "Mina")],
+    "zh": [("Owen (nam)", "Owen"), ("Noah (nam)", "Noah"), ("Mason (nam)", "Mason"), ("Grace (nữ)", "Grace")],
+    "vi": [("Adrian (nam)", "Adrian"), ("Oliver (nam)", "Oliver"), ("Noah (nam)", "Noah"), ("Emma (nữ)", "Emma")],
 }
 
 
