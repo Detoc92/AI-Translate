@@ -26,21 +26,83 @@ from avbuds_core import (
 )
 
 
-def glossary_path():
-    """Đường dẫn glossary.json để ĐỌC/GHI (bền qua các phiên). Khi đóng gói exe, ghi cạnh
-    file .exe (thư mục _internal chỉ đọc); khi chạy nguồn thì cạnh script."""
+import urllib.request  # tải/đẩy glossary lên GitHub (stdlib)
+
+
+def _app_dir():
+    """Thư mục cạnh app để lưu file bền (cache): cạnh .exe khi đóng gói, else cạnh script."""
     if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "glossary.json")
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def glossary_cache_path():
+    """File cache glossary cục bộ (dùng khi offline). Bị .gitignore."""
+    return os.path.join(_app_dir(), "glossary.cache.json")
 
 
 def load_glossary():
-    """Ưu tiên glossary.json cạnh app (người dùng đã học/sửa); chưa có thì lấy bản đóng gói."""
-    user = glossary_path()
-    g = Glossary.load(user) if os.path.exists(user) else Glossary.load(resource_path("glossary.json"))
-    return g
+    """Nạp NHANH (không mạng): cache cục bộ nếu có, else bản đóng gói kèm exe.
+    Bản mới nhất từ cloud được kéo về ở luồng nền (xem App._refresh_glossary_from_cloud)."""
+    cache = glossary_cache_path()
+    return Glossary.load(cache) if os.path.exists(cache) else Glossary.load(resource_path("glossary.json"))
+
+
+# ===== ĐỒNG BỘ GLOSSARY VỚI GITHUB (cloud) =====
+def _gh(attr, default):
+    return getattr(config, attr, default) or default
+
+
+def github_glossary_fetch(timeout=6):
+    """Tải glossary.json từ GitHub. Có token -> Contents API (đọc cả repo private); không ->
+    raw URL (repo public). Trả (data_dict, sha) hoặc (None, None)."""
+    repo = _gh("GLOSSARY_GITHUB_REPO", "Detoc92/AI-Translate")
+    branch = _gh("GLOSSARY_GITHUB_BRANCH", "main")
+    path = _gh("GLOSSARY_GITHUB_PATH", "glossary.json")
+    token = getattr(config, "GLOSSARY_GITHUB_TOKEN", "") or ""
+    try:
+        if token:
+            url = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                "User-Agent": "Avbuds-Glossary"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                j = json.loads(r.read().decode("utf-8"))
+            content = base64.b64decode(j["content"]).decode("utf-8")
+            return json.loads(content), j.get("sha")
+        url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Avbuds-Glossary"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8")), None
+    except Exception as e:
+        logger.warning(f"[GLOSSARY] Không tải được từ GitHub: {e}")
+        return None, None
+
+
+def github_glossary_push(data_dict, message="update glossary via app"):
+    """Đẩy glossary.json lên GitHub (Contents API, CẦN token). Trả (ok, new_sha|errmsg)."""
+    token = getattr(config, "GLOSSARY_GITHUB_TOKEN", "") or ""
+    if not token:
+        return False, "Chưa cấu hình GLOSSARY_GITHUB_TOKEN trong config.py"
+    repo = _gh("GLOSSARY_GITHUB_REPO", "Detoc92/AI-Translate")
+    branch = _gh("GLOSSARY_GITHUB_BRANCH", "main")
+    path = _gh("GLOSSARY_GITHUB_PATH", "glossary.json")
+    _d, sha = github_glossary_fetch(timeout=6)   # lấy sha mới nhất để không đè nhầm
+    body = {"message": message, "branch": branch,
+            "content": base64.b64encode(
+                json.dumps(data_dict, ensure_ascii=False, indent=2).encode("utf-8")).decode("ascii")}
+    if sha:
+        body["sha"] = sha
+    url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="PUT", headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        "User-Agent": "Avbuds-Glossary", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            j = json.loads(r.read().decode("utf-8"))
+        return True, j.get("content", {}).get("sha")
+    except Exception as e:
+        return False, str(e)
 
 # Tránh crash UnicodeEncodeError khi console không phải UTF-8 (vd cp949/cp1252)
 for _stream in (sys.stdout, sys.stderr):
@@ -565,10 +627,12 @@ class App(ctk.CTk):
         self.ui_to_obj_map = {}
 
         # Bộ từ vựng chuyên ngành (boost STT + dịch nhất quán + học từ chỗ sửa)
-        self.glossary = load_glossary()
+        self.glossary = load_glossary()            # nạp NHANH từ cache/bản đóng gói
         _gc = self.glossary.counts()
         logger.info(f"📚 [GLOSSARY] Nạp {_gc['terms']} thuật ngữ, {_gc['keep_original']} tên riêng, "
                     f"{_gc['corrections']} từ đã học.")
+        # Kéo bản MỚI NHẤT từ GitHub ở luồng nền (không chặn UI); có mạng thì tự cập nhật.
+        threading.Thread(target=self._refresh_glossary_from_cloud, daemon=True).start()
 
         # --- State cho TTS (đọc bản dịch → đẩy vào MIC ảo, hỗ trợ họp 2 chiều) ---
         self.tts_queue = queue.Queue()         # luồng RA: tiếng tôi → MIC ảo (người nghe)
@@ -1983,6 +2047,42 @@ class App(ctk.CTk):
             logger.error(f"[VB-CABLE] Error running the installer: {e}")
 
     # ================= TỪ CHUYÊN NGÀNH (GLOSSARY) =================
+    def _refresh_glossary_from_cloud(self):
+        """Luồng nền: tải glossary mới nhất từ GitHub → thay self.glossary + ghi cache offline."""
+        data, _sha = github_glossary_fetch()
+        if not (data and isinstance(data.get("terms"), list)):
+            return
+        try:
+            self.glossary = Glossary(terms=data.get("terms", []),
+                                     keep_original=data.get("keep_original", []),
+                                     corrections=data.get("corrections", {}),
+                                     meta=data.get("meta", {}))
+            with open(glossary_cache_path(), "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            c = self.glossary.counts()
+            logger.info(f"☁️ [GLOSSARY] Đồng bộ từ cloud: {c['terms']} thuật ngữ, "
+                        f"{c['corrections']} từ đã học (áp dụng ở lần START kế).")
+            cb = getattr(self, "_glossary_refresh_cb", None)
+            if cb is not None:
+                try: self.after(0, cb)
+                except Exception: pass
+        except Exception as e:
+            logger.warning(f"[GLOSSARY] Lỗi áp dữ liệu cloud: {e}")
+
+    def _cloud_push_glossary(self, message):
+        """Đẩy self.glossary lên GitHub (luồng nền) nếu đã cấu hình token; nếu chưa thì chỉ báo."""
+        if not (getattr(config, "GLOSSARY_GITHUB_TOKEN", "") or ""):
+            logger.info("ℹ️ [GLOSSARY] Đã lưu cục bộ. Chưa có GLOSSARY_GITHUB_TOKEN → KHÔNG đẩy lên cloud.")
+            return
+
+        def work():
+            ok, info = github_glossary_push(self.glossary.to_dict(), message)
+            if ok:
+                logger.info("☁️ [GLOSSARY] Đã đẩy lên GitHub — mọi máy nhận ở lần mở kế.")
+            else:
+                logger.error(f"[GLOSSARY] Đẩy lên GitHub thất bại: {info}")
+        threading.Thread(target=work, daemon=True).start()
+
     def open_glossary_dialog(self):
         """Cửa sổ xem/thêm thuật ngữ + DẠY từ nghe-sai→đúng. Lưu ngay vào glossary.json
         cạnh app (nhớ qua các phiên). Thuật ngữ mới áp dụng ở lần START kế; từ đã dạy
@@ -1992,7 +2092,7 @@ class App(ctk.CTk):
         win = ctk.CTkToplevel(self)
         self._glossary_win = win
         win.title("📚 Từ chuyên ngành")
-        win.geometry("460x520")
+        win.geometry("460x600")
         win.configure(fg_color=COLOR_BG)
         win.after(200, lambda: win.attributes("-topmost", True))
 
@@ -2003,6 +2103,23 @@ class App(ctk.CTk):
             c = self.glossary.counts()
             count_lbl.configure(text=f"📚 {c['terms']} thuật ngữ · {c['keep_original']} tên riêng · "
                                      f"{c['corrections']} từ đã học")
+
+        # cho phép luồng nền cập nhật nhãn khi kéo cloud xong; gỡ khi đóng cửa sổ
+        self._glossary_refresh_cb = refresh_counts
+
+        def _on_close():
+            self._glossary_refresh_cb = None
+            win.destroy()
+            self._glossary_win = None
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        # --- Đồng bộ cloud ---
+        def do_sync():
+            logger.info("🔄 [GLOSSARY] Đang kéo bản mới nhất từ GitHub...")
+            threading.Thread(target=self._refresh_glossary_from_cloud, daemon=True).start()
+
+        ctk.CTkButton(win, text="🔄 Đồng bộ từ cloud (GitHub)", command=do_sync,
+                      fg_color="#0E7490", hover_color="#155E75", font=("Arial", 11, "bold")).pack(pady=(0, 4), padx=16, fill="x")
 
         def _entry(parent, ph):
             e = ctk.CTkEntry(parent, placeholder_text=ph, fg_color="#0F172A", font=("Arial", 11))
@@ -2019,12 +2136,13 @@ class App(ctk.CTk):
         e_vi = _entry(f1, "Tiếng Việt (vd: trở kháng)")
 
         def do_add_term():
+            label = e_en.get() or e_ko.get() or e_vi.get()
             if self.glossary.add_term(en=e_en.get(), ko=e_ko.get(), vi=e_vi.get()):
-                self.glossary.save(glossary_path())
-                logger.info(f"📚 Đã thêm thuật ngữ: {e_en.get() or e_ko.get() or e_vi.get()} "
-                            f"(áp dụng ở lần START kế).")
+                self.glossary.save(glossary_cache_path())
+                logger.info(f"📚 Đã thêm thuật ngữ: {label} (áp dụng ở lần START kế).")
                 for e in (e_en, e_ko, e_vi): e.delete(0, "end")
                 refresh_counts()
+                self._cloud_push_glossary(f"add term: {label}")
             else:
                 logger.error("[GLOSSARY] Cần điền ít nhất 1 ô để thêm thuật ngữ.")
 
@@ -2040,11 +2158,13 @@ class App(ctk.CTk):
         e_right = _entry(f2, "Phải là (vd: impedance)")
 
         def do_add_corr():
-            if self.glossary.add_correction(e_wrong.get(), e_right.get()):
-                self.glossary.save(glossary_path())
-                logger.info(f"🎯 Đã học: '{e_wrong.get()}' → '{e_right.get()}' (sửa ngay cho câu mới).")
+            w, r = e_wrong.get(), e_right.get()
+            if self.glossary.add_correction(w, r):
+                self.glossary.save(glossary_cache_path())
+                logger.info(f"🎯 Đã học: '{w}' → '{r}' (sửa ngay cho câu mới).")
                 for e in (e_wrong, e_right): e.delete(0, "end")
                 refresh_counts()
+                self._cloud_push_glossary(f"learn correction: {w} -> {r}")
             else:
                 logger.error("[GLOSSARY] Cần điền cả 2 ô (nghe-sai và đúng).")
 
@@ -2052,9 +2172,10 @@ class App(ctk.CTk):
                       fg_color="#7C3AED", hover_color="#6D28D9", font=("Arial", 11, "bold")).pack(pady=(4, 10), padx=10, fill="x")
 
         ctk.CTkLabel(win,
-                     text="ℹ️ Thuật ngữ mới → engine dùng ở lần bấm START kế tiếp (boost nhận dạng +\n"
-                          "dịch nhất quán). Từ đã 'dạy' → sửa ngay trên câu vừa chốt. Tất cả lưu vào\n"
-                          "glossary.json cạnh app nên NHỚ qua các lần mở.",
+                     text="ℹ️ App tải glossary từ GitHub mỗi lần mở (cache offline). Thuật ngữ mới →\n"
+                          "dùng ở lần START kế; từ đã 'dạy' → sửa ngay câu vừa chốt.\n"
+                          "☁️ Có GLOSSARY_GITHUB_TOKEN trong config.py → thêm từ sẽ TỰ ĐẨY lên cloud\n"
+                          "cho mọi máy. Chưa có token → chỉ lưu cục bộ (gửi admin cập nhật repo).",
                      text_color=COLOR_TEXT_DRAFT, font=("Arial", 9), justify="left").pack(pady=(6, 8), padx=16, anchor="w")
 
         refresh_counts()
