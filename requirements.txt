@@ -1,0 +1,11 @@
+# Avbuds AI Secretary — phụ thuộc runtime
+# Cài: python -m pip install -r requirements.txt
+customtkinter
+soundcard
+openai
+numpy
+pillow
+websockets
+httpx
+edge-tts
+miniaudio

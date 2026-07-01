@@ -1,0 +1,123 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║        AVBUDS AI SECRETARY V22.0 — HƯỚNG DẪN SỬ DỤNG                   ║
+║        Phiên dịch hội thoại real-time 2 LUỒNG + ghi biên bản           ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+────────────────────────────────────────────────────────────────────────
+0. CHẠY CHƯƠNG TRÌNH
+────────────────────────────────────────────────────────────────────────
+- Mở thư mục này, chạy:  Avbuds_AI_Translate.exe
+- KHÔNG xoá thư mục "_internal" cạnh exe. Copy đi phải copy CẢ THƯ MỤC.
+- Cần INTERNET (engine dịch qua WebSocket).
+
+────────────────────────────────────────────────────────────────────────
+1. HAI LUỒNG DỊCH ĐỘC LẬP (chạy song song khi bấm START)
+────────────────────────────────────────────────────────────────────────
+
+  ┌─ LUỒNG NÓI (tôi → đối tác) ─────────────────────────────────────┐
+  │  Tôi nói vào MIC                                                 │
+  │   → STT → DỊCH sang OUTPUT (tiếng đối tác)                       │
+  │   → TTS đọc → đẩy vào MIC ẢO (CABLE) → Teams → ĐỐI TÁC NGHE      │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ┌─ LUỒNG NGHE (đối tác → tôi) ────────────────────────────────────┐
+  │  Tiếng đối tác phát ra LOA (từ Teams)                           │
+  │   → STT → DỊCH sang INPUT (tiếng tôi)                            │
+  │   → HIỆN SUB cho TÔI ĐỌC   (KHÔNG đọc thành tiếng)              │
+  └─────────────────────────────────────────────────────────────────┘
+
+  HIỂN THỊ 2 Ô (cả 2 luồng cùng đổ vào, sắp theo thời gian):
+     • Ô TRÁI  "GỐC"  = LUÔN tiếng ĐỐI TÁC.
+     • Ô PHẢI  "DỊCH" = LUÔN tiếng TÔI (để dễ đọc).
+     • Dòng nào là TÔI NÓI sẽ có icon 🗣️ ở đầu.
+   → Khi tôi nói: ô GỐC hiện bản dịch gửi cho đối tác, ô DỊCH hiện
+     đúng câu tôi vừa nói.
+   → Khi đối tác nói: ô GỐC hiện tiếng họ, ô DỊCH hiện bản dịch tôi đọc.
+
+────────────────────────────────────────────────────────────────────────
+2. CÁC BƯỚC THIẾT LẬP
+────────────────────────────────────────────────────────────────────────
+  1) Chế độ trên cùng:  "Realtime Mic".
+
+  2) ① THIẾT BỊ:
+       🎧 Thiết bị (chọn nhanh) → chọn 1 tai nghe/loa → TỰ điền cả 2 ô dưới
+                                   (MIC = mic cùng thiết bị, LOA = loopback của nó).
+                                   Nếu mic đó là Bluetooth HFP không thu được,
+                                   khi START app TỰ chuyển sang mic laptop.
+       Hai ô chi tiết (chỉnh tay khi cần):
+         🎤 MIC – tiếng TÔI nói   → 🎙️ [MIC] mic thật của bạn.
+         🔊 LOA – tiếng ĐỐI TÁC   → 🔊 [LOA] loa mà Teams đang phát ra.
+
+  3) ② NGÔN NGỮ (INPUT ⇄ OUTPUT, KHÔNG còn Auto detect — phải chọn rõ):
+       INPUT  = tiếng TÔI nói   (vd Vietnamese)
+       OUTPUT = tiếng ĐỐI TÁC   (vd English / Korean)
+       Nút ⇄ : đảo nhanh 2 bên.
+
+  4) Engine AI:
+       "Default (Soniox)" → khuyên dùng (rẻ, ổn định, chạy được cả 2 luồng).
+       "Smart Brain (Premium)" → OpenAI Realtime (chỉ áp cho luồng NÓI).
+
+  5) Để đối tác NGHE được giọng dịch của bạn:
+       - Bật "🔊 Đọc bản dịch cho người nghe".
+       - "🎙️ MIC gửi vào cuộc họp" = chọn 🎧 [MIC ẢO] CABLE Input.
+       - "🎧 Tôi cũng nghe" = bật (tự bật) để bạn nghe lại qua loa.
+
+  6) Bấm 🚀 START → cả 2 luồng chạy. ⏹️ STOP để dừng.
+
+────────────────────────────────────────────────────────────────────────
+3. SET MIC/SPEAKER TRONG TEAMS (rất quan trọng)
+────────────────────────────────────────────────────────────────────────
+  Cài MIC ẢO 1 lần:  _internal\drivers\VBCABLE_Setup_x64.exe (Run as admin)
+     → Install Driver → KHỞI ĐỘNG LẠI MÁY → mở lại app.
+
+  Teams → Settings → Devices:
+     • Microphone = "CABLE Output (VB-Audio Virtual Cable)"  ← giọng ĐÃ DỊCH
+     • Speaker    = loa/tai nghe THẬT của bạn.
+
+  Trong app:
+     • 🎤 MIC  = mic thật (tiếng bạn nói).
+     • 🔊 LOA  = đúng loa/tai nghe THẬT mà Teams phát ra (để dịch tiếng
+                  đối tác). Thường trùng với Speaker bạn chọn trong Teams.
+
+  ĐƯỜNG ĐI TÓM TẮT:
+     Bạn nói → MIC thật → app dịch → CABLE Input → Teams Mic (CABLE Output)
+            → tai đối tác.
+     Đối tác nói → Teams → LOA thật → app bắt loopback → dịch → SUB bạn đọc.
+
+  ⚠️ ĐỪNG đặt Teams Microphone = mic thật (đối tác sẽ nghe tiếng CHƯA dịch).
+  ⚠️ VB-CABLE đôi khi tự thành loa mặc định → bạn không nghe gì. Vào
+     Windows Sound Settings đặt lại Output về loa/tai nghe thật.
+
+────────────────────────────────────────────────────────────────────────
+4. PHỤ ĐỀ NỔI / BIÊN BẢN / FILE / EXPORT
+────────────────────────────────────────────────────────────────────────
+  - 🖥️ Phụ đề nổi (Sub): cửa sổ song ngữ luôn nổi, kéo thả, chỉnh cỡ chữ.
+       Hiển thị 3 DÒNG gần nhất (cuốn chiếu, mới nhất ở dưới), chỉ câu đã
+       dịch xong + giữ đủ lâu để đọc kịp khi nói nhanh.
+  - MASTER REPORT: tự tóm tắt mỗi ~5 phút; 📊 SUMMARY tạo bản chất lượng cao.
+  - "File Processing": chọn file audio → phiên âm + dịch.
+  - 💾 EXPORT DATA: lưu Markdown (gốc + dịch + biên bản).
+
+────────────────────────────────────────────────────────────────────────
+5. LƯU Ý
+────────────────────────────────────────────────────────────────────────
+  • API KEY đã nhúng sẵn → bản exe NỘI BỘ, ĐỪNG phát tán.
+  • Phải chọn rõ INPUT/OUTPUT (không còn Auto detect) để tránh loạn dịch.
+  • Lỗi đỏ hiện ở "SYSTEM LOGS (DEBUG)"; log đầy đủ ở system_debug.log.
+  • Nút "🎚️ Calibrate Noise" + thanh "Ngưỡng nhiễu" là trang trí (chưa gắn).
+
+────────────────────────────────────────────────────────────────────────
+6. KHẮC PHỤC NHANH
+────────────────────────────────────────────────────────────────────────
+  - MIC Bluetooth không thu được (lỗi AssertionError) → tai nghe Bluetooth ở
+     chế độ "Chat/Hands-Free (HFP)" KHÔNG dùng làm MIC được (giới hạn driver).
+     App sẽ TỰ chuyển sang mic laptop. 💡 Setup tốt nhất: MIC = mic laptop
+     (cho giọng nói), tai nghe Bluetooth CHỈ để NGHE (chất lượng cao hơn).
+  - Không có sub đối tác → đã chọn đúng 🔊 LOA mà Teams phát ra chưa?
+  - Đối tác không nghe    → Teams Mic = "CABLE Output"? đã bật "Đọc bản dịch"?
+  - Không tự nghe lại     → bật "🎧 Tôi cũng nghe"; kiểm tra loa thật.
+  - App không mở          → còn nguyên thư mục _internal cạnh exe?
+
+════════════════════════════════════════════════════════════════════════
+  CRESYN R&D — Avbuds AI Secretary V22.0
+════════════════════════════════════════════════════════════════════════

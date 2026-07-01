@@ -1,0 +1,45 @@
+======================================================================
+CRESYN R&D AI SECRETARY - PROTOCOL V17.4 (CORE ARCHITECTURE - FINAL)
+======================================================================
+I. HÀNG RÀO HỆ THỐNG
+[x] CẤM DẤU CHẤM PHẨY (;): Tuyệt đối không sử dụng dấu chấm phẩy trong toàn bộ logic điều khiển.
+[x] 4-THREAD ASYNC: Hệ thống phải chạy trên 4 luồng hoàn toàn độc lập (VAD, STT, GPT, AUDIT), giao tiếp qua Hàng đợi (Queue), tuyệt đối không luồng nào được "block" luồng nào.
+[x] UI INTEGRITY: Giữ nguyên Layout giao diện, sử dụng tag color (Đen/Xám/Xanh) để hiển thị trạng thái dữ liệu.
+[x] DUAL-LAYER LOGGING: Cảnh báo chi tiết (ms) ra CMD (Console) và cảnh báo rút gọn lên giao diện (UI).
+
+II. LUỒNG 1: VAD PRODUCER (Giám sát & Băm dữ liệu)
+[x] BỘ LỌC DSP: Mọi luồng âm thanh đều phải qua bộ lọc 100Hz - 8kHz trước khi VAD xử lý.
+[x] NGẮT CÂU (1.2s): Im lặng quá 1.2s -> Cắt Audio Block N, ném ID vào Hàng đợi.
+[x] CHỐT CHẶNG (5.0s): Im lặng quá 5.0s -> Phát cờ hiệu `[FLUSH_SIGNAL]` báo cuộc hội thoại đã dừng, ép Luồng 2 không được chờ tương lai.
+
+III. LUỒNG 2: STT CONSUMER (Mỏ neo Gối đầu 3-Blocks)
+[x] TÍN HIỆU THỤ ĐỘNG: Nhận Block N -> Đứng chờ cho đến khi có Block N+1 HOẶC nhận cờ `[FLUSH_SIGNAL]`.
+[x] GỘP AUDIO: Bình thường gửi gộp `[N-1, N, N+1]`. Nếu nhận Flush thì gửi `[N-1, N]`.
+[x] FUZZY MATCH OVERLAP (CẮT LẶP MỜ):
+    - Tìm điểm giao nhau 80% giữa PREV_RAW và CURR_RAW.
+    - Cắt phần TRƯỚC điểm giao nhau ném vào kho `COMMITTED_STT` (Đã chốt).
+    - Lấy toàn bộ CURR_RAW làm `DRAFT_STT` (Nháp - Có thể bị ghi đè ở vòng sau).
+
+IV. LUỒNG 3: GPT TRANSLATOR (Elastic Overwrite & Logic Prompt)
+[x] DUY TRÌ VÙNG NHÁP (ACTIVE_STT): Gom toàn bộ STT mới sinh ra nhưng chưa có dấu ngắt câu vào một giỏ dữ liệu tạm.
+[x] CẤU TRÚC PROMPT DỊCH THUẬT:
+    - System Role: "Dịch đoạn đang nói dở sang {target_lang}. Chỉ trả về văn bản dịch. KHÔNG chèn câu chào hỏi, KHÔNG giải thích. Ưu tiên tự động sắp xếp lại ngữ pháp cho trôi chảy."
+    - User Content: "Ngữ cảnh cũ: {COMMITTED_TRANS[-400:]} \n\n Đang nói dở: {ACTIVE_STT}"
+[x] LOGIC HIỂN THỊ TRÊN TRANSLATE BOX (Khung Phải):
+    - Phần COMMITTED_TRANS (Đã chốt): In bằng chữ màu Đen/Xanh đậm (Ổn định).
+    - Phần DRAFT_TRANS (Bản dịch mới): In nối tiếp bằng chữ màu Xám/In nghiêng.
+    - Cập nhật: Bản dịch Draft mới sẽ GHI ĐÈ (Overwrite) hoàn toàn lên bản dịch Draft cũ trên UI.
+[x] ĐIỀU KIỆN CHỐT CÂU (COMMIT TRIGGER): 
+    - Chỉ chốt khi ACTIVE_STT có dấu ngắt câu (., ?, !) hoặc vượt quá 150 chữ. 
+    - Hành động: Chữ Xám hóa Đen, lưu vào COMMITTED_TRANS, làm rỗng ACTIVE_STT.
+
+V. LUỒNG 4: AUDIT & MASTER REPORTING (Báo cáo tự động chuẩn JSON)
+[x] TỰ ĐỘNG VERIFY (3 phút): 
+    - Quét UI, đổi toàn bộ text ở trạng thái COMMITTED sang màu Xanh Blue (#2563EB) làm tín hiệu xác thực an toàn.
+[x] BÁO CÁO TỔNG HỢP (5 phút / Bấm Nút Stop):
+    - Kích hoạt khi t_curr - last_report > 300 giây.
+    - CẤU TRÚC PROMPT BÁO CÁO (JSON MODE): 
+      "BẮT BUỘC TRẢ VỀ CHUẨN JSON VỚI ĐÚNG 3 KEYS SAU: {'minutes': ['...'], 'summary': '...', 'actions': ['...']}"
+[x] LOGIC HIỂN THỊ REPORT BOX (Khung Dưới):
+    - Trích xuất JSON từ GPT, format lại rõ ràng và GHI ĐÈ báo cáo mới lên Khung ANALYSIS BOX.
+======================================================================

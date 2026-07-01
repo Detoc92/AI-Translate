@@ -1,0 +1,30 @@
+# ===== BÍ MẬT — TUYỆT ĐỐI KHÔNG commit (chứa API key) =====
+config.py
+
+# ===== Đóng gói / build =====
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ===== Nguồn sinh tự động (Cython/compile) =====
+Avbuds_AI_translate.c
+main_final.c
+
+# ===== Model / binary lớn (tải riêng) =====
+base/
+
+# ===== Log & cache runtime =====
+*.log
+build_log.txt
+glossary.cache.json
+
+# ===== Bản cũ / báo cáo tạm =====
+backup/
+report/
+
+# ===== OS =====
+Thumbs.db
+.DS_Store
