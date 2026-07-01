@@ -897,7 +897,20 @@ class App(ctk.CTk):
                          text_color="#F87171", font=("Arial", 9), justify="left").pack(pady=(2, 2), padx=10, anchor="w")
             ctk.CTkButton(tts_frame, text="📥 Install virtual MIC (VB-CABLE)", command=self.install_vbcable,
                           fg_color="#0E7490", hover_color="#155E75", font=("Arial", 10, "bold")).pack(pady=(0, 4), padx=10, fill="x")
-        # GIỌNG đọc cho ĐỐI TÁC (lane RA) — Edge, theo ngôn ngữ OUTPUT (đối tác nghe).
+        # NHÀ CUNG CẤP GIỌNG (TTS): chọn ngay trên UI → dropdown giọng bên dưới tự đổi theo.
+        self._TTS_PROVIDER_LABELS = {"Microsoft Edge (miễn phí)": "edge", "Soniox (trả phí)": "soniox"}
+        _cur_prov = getattr(config, "TTS_PROVIDER", "edge")
+        _cur_lbl = next((l for l, v in self._TTS_PROVIDER_LABELS.items() if v == _cur_prov),
+                        "Microsoft Edge (miễn phí)")
+        self.tts_provider_var = ctk.StringVar(value=_cur_lbl)
+        ctk.CTkLabel(tts_frame, text="🎛️ Nhà cung cấp giọng (TTS):", text_color=COLOR_TEXT_DRAFT,
+                     font=("Arial", 10, "bold")).pack(pady=(4, 0), padx=10, anchor="w")
+        ctk.CTkOptionMenu(tts_frame, variable=self.tts_provider_var,
+                          values=list(self._TTS_PROVIDER_LABELS.keys()),
+                          command=self._on_tts_provider_change,
+                          fg_color="#3B82F6", button_color="#2563EB", font=("Arial", 10)).pack(pady=(2, 4), padx=10, fill="x")
+
+        # GIỌNG đọc cho ĐỐI TÁC (lane RA) — theo provider + ngôn ngữ OUTPUT (đối tác nghe).
         self.tts_voice_var = ctk.StringVar(value="onyx")   # giữ cho nhánh OpenAI dự phòng
         _out_code0 = LANG_CODE_MAP.get(self.output_lang.get(), "en")
         self.tts_voice_out_var = ctk.StringVar(value=(tts_voice_labels(_out_code0) or ["(default)"])[0])
@@ -1596,6 +1609,17 @@ class App(ctk.CTk):
         else:
             self.two_way_frame.pack_forget()
             logger.info("➡️ ONE-WAY mode (unchanged behavior).")
+
+    def _on_tts_provider_change(self, _label=None):
+        """Đổi nhà cung cấp TTS ngay trên UI (Edge/Soniox). Cập nhật config runtime → engine dùng
+        liền (không cần START lại), và làm mới dropdown giọng cho đúng bộ giọng của provider."""
+        prov = self._TTS_PROVIDER_LABELS.get(self.tts_provider_var.get(), "edge")
+        config.TTS_PROVIDER = prov
+        self._refresh_voice_pickers()
+        if prov == "soniox":
+            logger.info("🎛️ TTS = Soniox (tts-rt-v1, trả phí ~$0.70/giờ, dùng key Soniox sẵn có).")
+        else:
+            logger.info("🎛️ TTS = Microsoft Edge (miễn phí).")
 
     def _refresh_voice_pickers(self, *_):
         """Cập nhật danh sách giọng theo ngôn ngữ: RA=output_lang, VÀO=input_lang."""
