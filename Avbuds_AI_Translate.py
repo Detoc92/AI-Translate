@@ -171,6 +171,32 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)-7s | %(message)s', datefmt='%H:%M:%S'))
 logger.addHandler(console_handler)
 
+# ===== CHẨN ĐOÁN ÂM THANH (tìm root-cause loop). Bật mặc định; tắt bằng env AVBUDS_DIAG=0 =====
+# Ghi chi tiết vào 'audio_trace.log': cấu hình thiết bị lúc START (+cảnh báo), biên độ thu
+# theo TỪNG luồng (biết lúc nào mic/loa có tiếng + trạng thái GATE), và mọi lần phát TTS.
+DIAG = (os.environ.get("AVBUDS_DIAG", "1") != "0")
+_diag_logger = logging.getLogger("AvbudsDIAG")
+_diag_logger.setLevel(logging.DEBUG)
+_diag_logger.propagate = False
+try:
+    _diag_fh = logging.FileHandler('audio_trace.log', encoding='utf-8')
+    _diag_fh.setFormatter(logging.Formatter('%(asctime)s.%(msecs)03d | %(message)s', datefmt='%H:%M:%S'))
+    _diag_logger.addHandler(_diag_fh)
+except Exception:
+    pass
+
+
+def diag(msg, ui=False):
+    """Ghi 1 dòng chẩn đoán (kèm mốc thời gian ms) vào audio_trace.log. ui=True thì hiện cả UI."""
+    if not DIAG:
+        return
+    try:
+        _diag_logger.info(msg)
+    except Exception:
+        pass
+    if ui:
+        logger.info(f"[DIAG] {msg}")
+
 
 # ================= II. THÔNG SỐ HỆ THỐNG & CẤU HÌNH =================
 # Version chương trình — hiển thị trên tiêu đề cửa sổ + nhãn trên giao diện.
@@ -1065,6 +1091,57 @@ class App(ctk.CTk):
         x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
         return np.interp(x_new, x_old, mono).astype(np.float32)
 
+    def _diag_dump_devices(self, mic_ui, mic_obj, sys_obj):
+        """In TOÀN BỘ cấu hình thiết bị + cảnh báo nguy cơ loop vào audio_trace.log (và UI).
+        Dùng để tìm root-cause: thiết bị nào thu, phát, có trùng nhau / có CABLE sai chỗ không."""
+        if not DIAG:
+            return
+
+        def nm(x):
+            return getattr(x, "name", str(x)) if x is not None else "(none)"
+
+        def key(n):
+            m = re.findall(r"\(([^)]*)\)", n or "")
+            return (m[-1] if m else (n or "")).strip().lower()
+
+        mic_name, listen_name = nm(mic_obj), nm(sys_obj)
+        tts_dev = self.tts_out_map.get(self.tts_device_var.get())
+        tts_name = nm(tts_dev)
+        mon = self._get_monitor_speaker() if self.tts_monitor_var.get() else None
+        try: wdef_spk = sc.default_speaker().name
+        except Exception: wdef_spk = "?"
+        try: wdef_mic = sc.default_microphone().name
+        except Exception: wdef_mic = "?"
+
+        diag("================ DEVICE CONFIG @ START ================", ui=True)
+        diag(f"  SPEAK mic (luồng NÓI)   = '{mic_name}'", ui=True)
+        diag(f"  LISTEN src (luồng NGHE) = '{listen_name}' | incoming_mode={self.incoming_mode_var.get()}", ui=True)
+        diag(f"  TTS out (ghi vào)       = '{tts_name}' | provider={getattr(config,'TTS_PROVIDER','edge')} | speak_on={self.tts_var.get()}", ui=True)
+        diag(f"  Monitor loa             = '{nm(mon)}' | monitor_on={self.tts_monitor_var.get()}", ui=True)
+        diag(f"  Windows default: speaker='{wdef_spk}' | mic='{wdef_mic}'", ui=True)
+        try:
+            cabs = [f"{d.name}(loopback={d.isloopback})" for d in sc.all_microphones(include_loopback=True)
+                    if "cable" in d.name.lower()]
+            cabs += [f"SPK:{s.name}" for s in sc.all_speakers() if "cable" in s.name.lower()]
+            diag(f"  CABLE devices: {cabs}")
+        except Exception:
+            pass
+
+        warns = []
+        if sys_obj is not None and key(mic_name) == key(listen_name) and mic_name != "(none)":
+            warns.append("MIC NÓI và LOA NGHE CÙNG 1 thiết bị → OS có thể trộn stream PHÁT vào đường THU (loop!)")
+        if "cable" in mic_name.lower() or "virtual" in mic_name.lower():
+            warns.append("MIC NÓI đang là thiết bị CABLE/ảo → thu lại chính TTS (loop!)")
+        if "cable" in wdef_spk.lower():
+            warns.append("LOA MẶC ĐỊNH Windows = CABLE → mọi âm hệ thống đổ vào CABLE Input → loop")
+        if tts_dev is not None and "cable" not in tts_name.lower():
+            warns.append("TTS out KHÔNG phải CABLE → người nghe không nhận qua mic ảo")
+        for w in warns:
+            diag(f"  ⚠️ {w}", ui=True)
+        if not warns:
+            diag("  ✅ Chưa thấy cảnh báo cấu hình rõ ràng — theo dõi biên độ thu (audio ON/OFF) để lần đường loop.", ui=True)
+        diag("======================================================", ui=True)
+
     def audio_capture_thread(self, device_obj, sample_rate, target_q=None):
         q = target_q if target_q is not None else audio_queue
         lane = "LISTEN/SPK" if target_q is not None else "SPEAK/MIC"
@@ -1078,10 +1155,26 @@ class App(ctk.CTk):
                 with device_obj.recorder(samplerate=cap_rate, channels=1) as recorder:
                     note = f" → resample {want_rate}Hz" if cap_rate != want_rate else ""
                     logger.info(f"🎙️ [{lane}] Capture OK '{dev_name}' @ {cap_rate}Hz{note}.")
+                    diag(f"[{lane}] CAPTURE START dev='{dev_name}' @ {cap_rate}Hz")
+                    _diag_prev = False
                     while is_recording:
                         data = recorder.record(numframes=CAPTURE_FRAMES)
                         if not is_recording:
                             break
+                        # CHẨN ĐOÁN: log biên độ thu (rms) ở CẠNH lên/xuống — tính TRƯỚC mọi gate để
+                        # thấy được mic/loa CÓ nghe gì không kể cả lúc đang bị gate (tìm đường loop).
+                        if DIAG:
+                            _col = data[:, 0]
+                            _rms = float(np.sqrt(np.mean(_col * _col))) if _col.size else 0.0
+                            _act = _rms > 0.015
+                            if _act != _diag_prev:
+                                if _act:
+                                    diag(f"[{lane}] audio ON  rms={_rms:.4f} dev='{dev_name}' "
+                                         f"gate(tts_out={self._tts_out_active},tts_in={self._tts_in_active},"
+                                         f"speak_on={self.tts_var.get()})")
+                                else:
+                                    diag(f"[{lane}] audio OFF rms={_rms:.4f} dev='{dev_name}'")
+                                _diag_prev = _act
                         # BUG2 — MUTE LUỒNG NÓI: khi TẮT "Đọc bản dịch cho người nghe"
                         # thì coi như tắt hẳn mic của tôi (không thu → không dịch → không
                         # in ra màn hình → không gửi đi). Bật lại là chạy ngay, không cần START lại.
@@ -1417,6 +1510,7 @@ class App(ctk.CTk):
                     else:
                         self._incoming_translate = True
                         logger.info("👂 [LISTEN] Full-translate partner from SPEAKER → sub.")
+            self._diag_dump_devices(mic_ui, mic_obj, sys_obj)
             if sys_obj is not None:
                 threading.Thread(target=self.audio_capture_thread, args=(sys_obj, 16000, audio_queue_in), daemon=True).start()
                 threading.Thread(target=self.run_async_loop_in, daemon=True).start()
@@ -1853,6 +1947,8 @@ class App(ctk.CTk):
                 if audio is None:
                     audio = self._synth_audio(text, lang_code, voice)
                 if audio is not None:
+                    diag(f"[TTS-{lane}] PLAY '{text}' → primary='{getattr(primary,'name','?')}' "
+                         f"monitor='{getattr(monitor,'name',None)}'")
                     play_q.put((audio, primary, monitor))
             except Exception as e:
                 logger.error(f"[TTS-{lane}] Voice synthesis error: {e}")
@@ -1870,12 +1966,16 @@ class App(ctk.CTk):
                     self._tts_in_active = True
                 else:
                     self._tts_out_active = True
+                diag(f"[TTS-{lane}] play START primary='{getattr(primary,'name','?')}' "
+                     f"monitor='{getattr(monitor,'name',None)}' → GATE thu BẬT")
                 self._play_audio(audio, primary, monitor)
+                diag(f"[TTS-{lane}] play DONE")
             except Exception as e:
                 logger.error(f"[TTS] Voice playback error: {e}")
             finally:
                 # đuôi 0.3s chờ âm tắt hẳn trước khi mở lại cổng thu (tránh bắt phần đuôi)
                 time.sleep(0.3)
+                diag(f"[TTS-{lane}] GATE thu TẮT (sau đuôi 0.3s)")
                 if lane == "in":
                     self._tts_in_active = False
                 else:
@@ -2420,6 +2520,10 @@ class App(ctk.CTk):
                         msg["orig_final"] = self.glossary.correct_text(msg["orig_final"])
                     if msg.get("trans_final"):
                         msg["trans_final"] = self.glossary.correct_text(msg["trans_final"])
+                if DIAG and (msg.get("orig_has_final") or msg.get("trans_has_final")):
+                    _ln = "LISTEN" if msg.get("lane") == "in" else "SPEAK"
+                    diag(f"[{_ln}] STT final: orig='{(msg.get('orig_final') or '').strip()}' "
+                         f"trans='{(msg.get('trans_final') or '').strip()}'")
                 if msg.get("lane") == "in":
                     self.engine_in.feed_soniox(msg)
                 else:
