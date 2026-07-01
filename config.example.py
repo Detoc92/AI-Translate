@@ -26,6 +26,10 @@ FILE_STT_PROVIDER = "soniox"
 TTS_PROVIDER = "edge"
 SONIOX_TTS_VOICE = "Adrian"   # giọng khi TTS_PROVIDER="soniox" (xem danh mục voice của Soniox)
 
+# Half-duplex chống loop 2 máy khi MIC ≡ LOA (cùng 1 tai nghe): đang NGHE thì tạm khóa mic NÓI.
+# True = chống loop (khuyến nghị). False = song công.
+HALF_DUPLEX = True
+
 # ----- Glossary trên GitHub (cloud) -----
 # App TẢI glossary.json từ repo mỗi lần mở (cache offline) và có thể ĐẨY từ mới lên.
 GLOSSARY_GITHUB_REPO = "Detoc92/AI-Translate"   # owner/repo chứa glossary.json

@@ -325,6 +325,11 @@ def is_in_cable(name):
 # nhất là khi 2 bên cùng bật app gây loop). Cap ~32 gói (vài giây) rồi BỎ gói CŨ NHẤT
 # để giữ độ trễ thấp thay vì phình vô hạn.
 AUDIO_Q_MAX = 32
+# HALF-DUPLEX chống loop 2 máy khi MIC ≡ LOA (cùng 1 tai nghe): khi luồng NGHE đang có
+# tiếng (đối tác/echo phát ra tai nghe), tạm KHÓA mic NÓI để mic không thu lại luồng phát
+# (rò qua DSP tai nghe HFP) rồi bơm ngược. Tắt bằng config.HALF_DUPLEX = False.
+HALF_DUPLEX_RMS = 0.012    # ngưỡng coi luồng NGHE "đang có tiếng"
+HALF_DUPLEX_HOLD = 0.6     # giữ khóa mic NÓI thêm 0.6s sau tiếng NGHE cuối
 # Kích thước gói thu mic: 1600 frame ≈ 0.1s (Soniox 16k) — nhỏ hơn 4000 cũ để audio tới
 # STT sớm hơn, pipeline nhạy hơn (đổi nhẹ, không thêm thư viện).
 CAPTURE_FRAMES = 1600
@@ -730,6 +735,11 @@ class App(ctk.CTk):
         self.tts_spoken_count_in = 0           # con trỏ block đã đọc (luồng VÀO)
         self.tts_out_map = {}                  # ui_string -> speaker object (VB-CABLE...)
         self.tts_worker_started = False
+        # ECHO SUPPRESSION theo NỘI DUNG: nhớ các câu TTS vừa PHÁT RA (norm_text, time). Nếu luồng
+        # NGHE phiên âm ra đúng câu này trong cửa sổ thời gian → là tiếng CHÍNH MÌNH vọng về → bỏ.
+        # Chặn loop bất kể độ trễ/định tuyến (gate theo thời gian không đủ vì echo bị trễ thay đổi).
+        self._recent_tts_out = []              # [(norm_text, ts)]
+        self._incoming_until = 0.0             # half-duplex: khóa mic NÓI tới mốc này (khi luồng NGHE có tiếng)
         self._tts_in_active = False            # cờ chống loop: True khi đang PHÁT IN-TTS → gate input VÀO
         self._tts_out_active = False           # cờ chống loop: True khi đang PHÁT OUT-TTS (monitor loa) → gate input VÀO
 
@@ -1157,21 +1167,26 @@ class App(ctk.CTk):
                     logger.info(f"🎙️ [{lane}] Capture OK '{dev_name}' @ {cap_rate}Hz{note}.")
                     diag(f"[{lane}] CAPTURE START dev='{dev_name}' @ {cap_rate}Hz")
                     _diag_prev = False
+                    _half_gated = False
                     while is_recording:
                         data = recorder.record(numframes=CAPTURE_FRAMES)
                         if not is_recording:
                             break
-                        # CHẨN ĐOÁN: log biên độ thu (rms) ở CẠNH lên/xuống — tính TRƯỚC mọi gate để
-                        # thấy được mic/loa CÓ nghe gì không kể cả lúc đang bị gate (tìm đường loop).
+                        # Biên độ khung thu (tính LUÔN — dùng cho half-duplex + chẩn đoán).
+                        _col = data[:, 0]
+                        _rms = float(np.sqrt(np.mean(_col * _col))) if _col.size else 0.0
+                        # HALF-DUPLEX: khi luồng NGHE (loopback) đang có tiếng → đánh dấu để KHÓA mic NÓI
+                        # trong HALF_DUPLEX_HOLD giây tới. Đây là mấu chốt chống loop khi MIC ≡ LOA
+                        # (cùng 1 tai nghe HFP): mic không thu lại được luồng đang phát → không bơm ngược.
+                        if q is audio_queue_in and _rms > HALF_DUPLEX_RMS:
+                            self._incoming_until = time.time() + HALF_DUPLEX_HOLD
                         if DIAG:
-                            _col = data[:, 0]
-                            _rms = float(np.sqrt(np.mean(_col * _col))) if _col.size else 0.0
                             _act = _rms > 0.015
                             if _act != _diag_prev:
                                 if _act:
                                     diag(f"[{lane}] audio ON  rms={_rms:.4f} dev='{dev_name}' "
                                          f"gate(tts_out={self._tts_out_active},tts_in={self._tts_in_active},"
-                                         f"speak_on={self.tts_var.get()})")
+                                         f"speak_on={self.tts_var.get()},incoming={time.time() < self._incoming_until})")
                                 else:
                                     diag(f"[{lane}] audio OFF rms={_rms:.4f} dev='{dev_name}'")
                                 _diag_prev = _act
@@ -1180,15 +1195,19 @@ class App(ctk.CTk):
                         # in ra màn hình → không gửi đi). Bật lại là chạy ngay, không cần START lại.
                         if q is audio_queue and not self.tts_var.get():
                             continue
+                        # HALF-DUPLEX GATE (mấu chốt chống loop 2 máy khi MIC ≡ LOA cùng 1 tai nghe):
+                        # khi luồng NGHE vừa có tiếng (đối tác/echo phát ra tai nghe) → KHÓA mic NÓI.
+                        # Nhờ vậy mic không thu lại được luồng phát (rò qua DSP HFP) rồi bơm ngược.
+                        if (q is audio_queue and getattr(config, "HALF_DUPLEX", True)
+                                and time.time() < self._incoming_until):
+                            if DIAG and not _half_gated:
+                                diag(f"[{lane}] HALF-DUPLEX gate: khóa mic NÓI vì luồng NGHE đang có tiếng")
+                                _half_gated = True
+                            continue
+                        _half_gated = False
                         # GATE CHỐNG LOOP (đối xứng CẢ 2 luồng): khi đang PHÁT bất kỳ TTS nào
                         # (RA → cable cho người nghe, hoặc VÀO → loa thật cho tôi), tạm NGỪNG thu ở
-                        # CẢ luồng NÓI (mic) LẪN NGHE (loopback). Lý do quan trọng khi ĐANG GỌI:
-                        # giọng TTS phát đi có thể (a) rò qua tai nghe hở, hoặc (b) VỌNG NGƯỢC về từ
-                        # đầu bên kia cuộc gọi (far-end echo) rồi được app họp phát ra LOA THẬT →
-                        # nếu mic NÓI thu lại đúng lúc đó, nó tưởng là câu mới → dịch & đọc vòng lại
-                        # → LOOP "tự nói lại". Trước đây chỉ gate luồng NGHE nên mic NÓI vẫn thu được
-                        # echo và gây loop. Đuôi im lặng (tail) trong _tts_play_worker giữ cổng đóng
-                        # thêm 1 nhịp để né phần đuôi + echo vọng về.
+                        # CẢ luồng NÓI (mic) LẪN NGHE (loopback).
                         if self._tts_in_active or self._tts_out_active:
                             continue
                         mono = data[:, 0].astype(np.float32)
@@ -1410,6 +1429,7 @@ class App(ctk.CTk):
         self.summary.reset()
         self.tts_spoken_count = 0      # bắt đầu phiên mới: không đọc lại block cũ
         self.tts_spoken_count_in = 0
+        self._recent_tts_out = []      # xoá lịch sử echo-suppression phiên cũ
         # Reset hàng đợi phụ đề (A+C)
         self.sub_queue.clear()
         self.sub_seen_out = 0
@@ -1859,6 +1879,20 @@ class App(ctk.CTk):
         t = re.sub(r"\s+", " ", (text or "").lower()).strip()
         return t.strip(" .,!?;:…\"'·、。，！？")
 
+    def _is_own_echo(self, text, window=15.0):
+        """True nếu `text` (do luồng NGHE phiên âm) TRÙNG một câu TTS mình vừa PHÁT RA trong
+        `window` giây → đó là tiếng CHÍNH MÌNH vọng về (không phải đối tác) → bỏ để cắt loop."""
+        c = self._norm_tts_key(text)
+        if not c or len(c) < 3:
+            return False
+        now = time.time()
+        for rn, ts in self._recent_tts_out:
+            if now - ts > window or not rn:
+                continue
+            if rn == c or (len(c) >= 4 and (c in rn or rn in c)):
+                return True
+        return False
+
     def _tts_prewarm(self):
         """Gọi 1 lần tổng hợp ngắn để 'làm nóng' kết nối Edge → giảm trễ câu đầu tiên."""
         try:
@@ -2209,6 +2243,11 @@ class App(ctk.CTk):
                 t = (out_blocks[self.tts_spoken_count].get("trans") or "").strip()
                 if t:
                     self.tts_queue.put(t)
+                    # ghi lại câu vừa phát để echo-suppression: nếu luồng NGHE thu lại đúng câu
+                    # này (vọng về) thì bỏ (xem _is_own_echo trong update_ui_loop).
+                    self._recent_tts_out.append((self._norm_tts_key(t), time.time()))
+                    if len(self._recent_tts_out) > 60:
+                        self._recent_tts_out = self._recent_tts_out[-60:]
                 self.tts_spoken_count += 1
 
         # LUỒNG VÀO (2 chiều): tiếng đối tác đã dịch sang TIẾNG TÔI → đọc to ra loa thật.
@@ -2520,6 +2559,15 @@ class App(ctk.CTk):
                         msg["orig_final"] = self.glossary.correct_text(msg["orig_final"])
                     if msg.get("trans_final"):
                         msg["trans_final"] = self.glossary.correct_text(msg["trans_final"])
+                # ECHO SUPPRESSION: luồng NGHE thu phải giọng TTS của CHÍNH MÌNH vọng về → BỎ
+                # (khớp nội dung, chặn loop dù echo trễ bao nhiêu / đi đường nào).
+                if msg.get("lane") == "in":
+                    _cand = (msg.get("orig_final") or msg.get("orig_prov")
+                             or msg.get("trans_final") or msg.get("trans_prov") or "")
+                    if self._is_own_echo(_cand):
+                        if DIAG and (msg.get("orig_has_final") or msg.get("trans_has_final")):
+                            diag(f"[LISTEN] DROP echo của TTS mình: '{_cand.strip()}'")
+                        continue
                 if DIAG and (msg.get("orig_has_final") or msg.get("trans_has_final")):
                     _ln = "LISTEN" if msg.get("lane") == "in" else "SPEAK"
                     diag(f"[{_ln}] STT final: orig='{(msg.get('orig_final') or '').strip()}' "
