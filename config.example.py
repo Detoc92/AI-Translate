@@ -26,9 +26,9 @@ FILE_STT_PROVIDER = "soniox"
 TTS_PROVIDER = "edge"
 SONIOX_TTS_VOICE = "Adrian"   # giọng khi TTS_PROVIDER="soniox" (xem danh mục voice của Soniox)
 
-# Half-duplex chống loop 2 máy khi MIC ≡ LOA (cùng 1 tai nghe): đang NGHE thì tạm khóa mic NÓI.
-# True = chống loop (khuyến nghị). False = song công.
-HALF_DUPLEX = True
+# Half-duplex (TÙY CHỌN dự phòng, MẶC ĐỊNH TẮT): đang NGHE thì tạm khóa mic NÓI. Gây phân mảnh
+# lời nói nên để False; chống loop chính dùng echo-suppression theo nội dung (song công).
+HALF_DUPLEX = False
 
 # ----- Glossary trên GitHub (cloud) -----
 # App TẢI glossary.json từ repo mỗi lần mở (cache offline) và có thể ĐẨY từ mới lên.

@@ -738,8 +738,9 @@ class App(ctk.CTk):
         # ECHO SUPPRESSION theo NỘI DUNG: nhớ các câu TTS vừa PHÁT RA (norm_text, time). Nếu luồng
         # NGHE phiên âm ra đúng câu này trong cửa sổ thời gian → là tiếng CHÍNH MÌNH vọng về → bỏ.
         # Chặn loop bất kể độ trễ/định tuyến (gate theo thời gian không đủ vì echo bị trễ thay đổi).
-        self._recent_tts_out = []              # [(norm_text, ts)]
-        self._incoming_until = 0.0             # half-duplex: khóa mic NÓI tới mốc này (khi luồng NGHE có tiếng)
+        self._recent_tts_out = []              # [(norm_text, ts)] câu TTS mình vừa phát (chống echo về LISTEN)
+        self._recent_listen_texts = []         # [(norm_text, ts)] nội dung đang NGHE (để SPEAK loại echo rò HFP)
+        self._incoming_until = 0.0             # half-duplex (tùy chọn): khóa mic NÓI tới mốc này
         self._tts_in_active = False            # cờ chống loop: True khi đang PHÁT IN-TTS → gate input VÀO
         self._tts_out_active = False           # cờ chống loop: True khi đang PHÁT OUT-TTS (monitor loa) → gate input VÀO
 
@@ -1198,7 +1199,7 @@ class App(ctk.CTk):
                         # HALF-DUPLEX GATE (mấu chốt chống loop 2 máy khi MIC ≡ LOA cùng 1 tai nghe):
                         # khi luồng NGHE vừa có tiếng (đối tác/echo phát ra tai nghe) → KHÓA mic NÓI.
                         # Nhờ vậy mic không thu lại được luồng phát (rò qua DSP HFP) rồi bơm ngược.
-                        if (q is audio_queue and getattr(config, "HALF_DUPLEX", True)
+                        if (q is audio_queue and getattr(config, "HALF_DUPLEX", False)
                                 and time.time() < self._incoming_until):
                             if DIAG and not _half_gated:
                                 diag(f"[{lane}] HALF-DUPLEX gate: khóa mic NÓI vì luồng NGHE đang có tiếng")
@@ -1430,6 +1431,7 @@ class App(ctk.CTk):
         self.tts_spoken_count = 0      # bắt đầu phiên mới: không đọc lại block cũ
         self.tts_spoken_count_in = 0
         self._recent_tts_out = []      # xoá lịch sử echo-suppression phiên cũ
+        self._recent_listen_texts = []
         # Reset hàng đợi phụ đề (A+C)
         self.sub_queue.clear()
         self.sub_seen_out = 0
@@ -1887,6 +1889,21 @@ class App(ctk.CTk):
             return False
         now = time.time()
         for rn, ts in self._recent_tts_out:
+            if now - ts > window or not rn:
+                continue
+            if rn == c or (len(c) >= 4 and (c in rn or rn in c)):
+                return True
+        return False
+
+    def _is_listen_echo(self, text, window=6.0):
+        """True nếu `text` (luồng NÓI phiên âm) TRÙNG nội dung đang NGHE gần đây → mic thu lại
+        đúng luồng đang phát (rò HFP) chứ không phải giọng thật → BỎ. Giữ song công: nói KHÁC
+        thì không khớp → vẫn gửi bình thường."""
+        c = self._norm_tts_key(text)
+        if not c or len(c) < 3:
+            return False
+        now = time.time()
+        for rn, ts in self._recent_listen_texts:
             if now - ts > window or not rn:
                 continue
             if rn == c or (len(c) >= 4 and (c in rn or rn in c)):
@@ -2559,16 +2576,34 @@ class App(ctk.CTk):
                         msg["orig_final"] = self.glossary.correct_text(msg["orig_final"])
                     if msg.get("trans_final"):
                         msg["trans_final"] = self.glossary.correct_text(msg["trans_final"])
-                # ECHO SUPPRESSION: luồng NGHE thu phải giọng TTS của CHÍNH MÌNH vọng về → BỎ
-                # (khớp nội dung, chặn loop dù echo trễ bao nhiêu / đi đường nào).
+                # ECHO SUPPRESSION theo NỘI DUNG (GIỮ SONG CÔNG — KHÔNG khóa mic):
+                _has_final = msg.get("orig_has_final") or msg.get("trans_has_final")
                 if msg.get("lane") == "in":
+                    # (a) luồng NGHE thu phải giọng TTS của CHÍNH MÌNH vọng về → BỎ
                     _cand = (msg.get("orig_final") or msg.get("orig_prov")
                              or msg.get("trans_final") or msg.get("trans_prov") or "")
                     if self._is_own_echo(_cand):
-                        if DIAG and (msg.get("orig_has_final") or msg.get("trans_has_final")):
+                        if DIAG and _has_final:
                             diag(f"[LISTEN] DROP echo của TTS mình: '{_cand.strip()}'")
                         continue
-                if DIAG and (msg.get("orig_has_final") or msg.get("trans_has_final")):
+                    # ghi lại nội dung ĐANG NGHE (final) để luồng NÓI đối chiếu chống loop 2 máy
+                    if _has_final:
+                        _k = self._norm_tts_key(msg.get("orig_final") or msg.get("trans_final") or "")
+                        if _k:
+                            self._recent_listen_texts.append((_k, time.time()))
+                            if len(self._recent_listen_texts) > 60:
+                                self._recent_listen_texts = self._recent_listen_texts[-60:]
+                else:
+                    # (b) LUỒNG NÓI phiên âm ra ĐÚNG câu đang NGHE = mic thu lại luồng phát (rò HFP)
+                    #     → là echo, KHÔNG phải giọng thật → BỎ (không bơm ngược). Nói KHÁC thì giữ
+                    #     → vẫn song công, không phân mảnh lời thật.
+                    _sp = (msg.get("orig_final") or msg.get("orig_prov")
+                           or msg.get("trans_final") or msg.get("trans_prov") or "")
+                    if self._is_listen_echo(_sp):
+                        if DIAG and _has_final:
+                            diag(f"[SPEAK] DROP echo của tiếng ĐANG NGHE (rò HFP): '{_sp.strip()}'")
+                        continue
+                if DIAG and _has_final:
                     _ln = "LISTEN" if msg.get("lane") == "in" else "SPEAK"
                     diag(f"[{_ln}] STT final: orig='{(msg.get('orig_final') or '').strip()}' "
                          f"trans='{(msg.get('trans_final') or '').strip()}'")
