@@ -228,6 +228,41 @@ def edge_voice_from_label(lang_code, label):
     return EDGE_VOICES.get(lang_code, EDGE_VOICES["en"])
 
 
+# Giọng Soniox TTS (tts-rt-v1). LƯU Ý: mọi giọng Soniox đều ĐA NGÔN NGỮ (nói được 60+
+# thứ tiếng) — nên đây là 3 giọng CHỌN SẴN hợp mỗi ngôn ngữ (cân bằng nam/nữ), giọng nào
+# cũng đọc được ngôn ngữ đó. (nhãn_hiển_thị, tên_giọng). Giọng ĐẦU = mặc định.
+SONIOX_VOICE_CHOICES = {
+    "en": [("Adrian (nam)", "Adrian"), ("Emma (nữ)", "Emma"), ("Oliver (nam)", "Oliver")],
+    "ko": [("Mina (nữ)", "Mina"), ("Noah (nam)", "Noah"), ("Grace (nữ)", "Grace")],
+    "ja": [("Kenji (nam)", "Kenji"), ("Mina (nữ)", "Mina"), ("Emma (nữ)", "Emma")],
+    "zh": [("Grace (nữ)", "Grace"), ("Owen (nam)", "Owen"), ("Nina (nữ)", "Nina")],
+    "vi": [("Emma (nữ)", "Emma"), ("Adrian (nam)", "Adrian"), ("Mina (nữ)", "Mina")],
+}
+
+
+def _is_soniox_tts():
+    return getattr(config, "TTS_PROVIDER", "edge") == "soniox"
+
+
+def tts_voice_labels(lang_code):
+    """Danh sách nhãn giọng theo NHÀ CUNG CẤP đang chọn: Soniox → SONIOX_VOICE_CHOICES,
+    còn lại (edge) → EDGE_VOICE_CHOICES."""
+    if _is_soniox_tts():
+        return [lbl for lbl, _ in SONIOX_VOICE_CHOICES.get(lang_code, SONIOX_VOICE_CHOICES.get("en", []))]
+    return edge_voice_labels(lang_code)
+
+
+def tts_voice_from_label(lang_code, label):
+    """Nhãn → tên giọng theo nhà cung cấp đang chọn."""
+    if _is_soniox_tts():
+        choices = SONIOX_VOICE_CHOICES.get(lang_code) or SONIOX_VOICE_CHOICES.get("en", [])
+        for lbl, voice in choices:
+            if lbl == label:
+                return voice
+        return choices[0][1] if choices else (getattr(config, "SONIOX_TTS_VOICE", "") or "Adrian")
+    return edge_voice_from_label(lang_code, label)
+
+
 # Phát hiện đầu cable theo TÊN thiết bị Windows (để gán vai trò & lọc, chống nhầm):
 #   • Cable RA (giọng tôi → cuộc họp) = VB-CABLE gốc → tên chứa "virtual cable".
 #   • Cable VÀO (đối tác → tôi)        = VB-CABLE A   → tên chứa "cable a"/"cable-a".
@@ -865,11 +900,11 @@ class App(ctk.CTk):
         # GIỌNG đọc cho ĐỐI TÁC (lane RA) — Edge, theo ngôn ngữ OUTPUT (đối tác nghe).
         self.tts_voice_var = ctk.StringVar(value="onyx")   # giữ cho nhánh OpenAI dự phòng
         _out_code0 = LANG_CODE_MAP.get(self.output_lang.get(), "en")
-        self.tts_voice_out_var = ctk.StringVar(value=(edge_voice_labels(_out_code0) or ["(default)"])[0])
+        self.tts_voice_out_var = ctk.StringVar(value=(tts_voice_labels(_out_code0) or ["(default)"])[0])
         ctk.CTkLabel(tts_frame, text="🗣️ Voice for the partner:", text_color=COLOR_TEXT_DRAFT,
                      font=("Arial", 10, "bold")).pack(pady=(2, 0), padx=10, anchor="w")
         self.voice_out_menu = ctk.CTkOptionMenu(tts_frame, variable=self.tts_voice_out_var,
-                          values=edge_voice_labels(_out_code0) or ["(default)"],
+                          values=tts_voice_labels(_out_code0) or ["(default)"],
                           fg_color=COLOR_BTN, font=("Arial", 10))
         self.voice_out_menu.pack(pady=(2, 4), padx=10, fill="x")
         self.tts_speed_var = ctk.StringVar(value="1.25x")
@@ -1525,11 +1560,11 @@ class App(ctk.CTk):
 
         # Giọng đọc cho TÔI (theo input_lang)
         _in_code0 = LANG_CODE_MAP.get(self.input_lang.get(), "vi")
-        self.tts_voice_in_var = ctk.StringVar(value=(edge_voice_labels(_in_code0) or ["(default)"])[0])
+        self.tts_voice_in_var = ctk.StringVar(value=(tts_voice_labels(_in_code0) or ["(default)"])[0])
         ctk.CTkLabel(f, text="🗣️ Voice for me:", text_color=COLOR_TEXT_DRAFT,
                      font=("Arial", 10, "bold")).pack(pady=(2, 0), padx=10, anchor="w")
         self.voice_in_menu = ctk.CTkOptionMenu(f, variable=self.tts_voice_in_var,
-                      values=edge_voice_labels(_in_code0) or ["(default)"],
+                      values=tts_voice_labels(_in_code0) or ["(default)"],
                       fg_color=COLOR_BTN, font=("Arial", 10))
         self.voice_in_menu.pack(pady=2, padx=10, fill="x")
 
@@ -1567,13 +1602,13 @@ class App(ctk.CTk):
         if getattr(self, "voice_out_menu", None) is None:
             return
         out_code = LANG_CODE_MAP.get(self.output_lang.get(), "en")
-        out_labels = edge_voice_labels(out_code) or ["(default)"]
+        out_labels = tts_voice_labels(out_code) or ["(default)"]
         self.voice_out_menu.configure(values=out_labels)
         if self.tts_voice_out_var.get() not in out_labels:
             self.tts_voice_out_var.set(out_labels[0])
         if getattr(self, "voice_in_menu", None) is not None:
             in_code = LANG_CODE_MAP.get(self.input_lang.get(), "vi")
-            in_labels = edge_voice_labels(in_code) or ["(default)"]
+            in_labels = tts_voice_labels(in_code) or ["(default)"]
             self.voice_in_menu.configure(values=in_labels)
             if self.tts_voice_in_var.get() not in in_labels:
                 self.tts_voice_in_var.set(in_labels[0])
@@ -1864,7 +1899,7 @@ class App(ctk.CTk):
         lang_code = LANG_CODE_MAP.get(lang_name, "en")
         if lang_code == "auto":
             lang_code = "en"
-        voice = edge_voice_from_label(lang_code, voice_label)
+        voice = tts_voice_from_label(lang_code, voice_label)
         return primary, monitor, lang_code, voice
 
     def _synth_audio(self, text, lang_code="en", voice=None):
@@ -1877,7 +1912,7 @@ class App(ctk.CTk):
         if provider == "edge":
             pcm = self._synth_edge(text, lang_code, speed, voice)
         elif provider == "soniox":
-            pcm = self._synth_soniox(text, lang_code)
+            pcm = self._synth_soniox(text, lang_code, voice)
         else:
             pcm = self._synth_openai(text, speed)
         n = len(pcm) - (len(pcm) % 2)
@@ -1895,12 +1930,13 @@ class App(ctk.CTk):
         for t in threads:      # chờ phát xong để giữ thứ tự đọc nối tiếp giữa các câu
             t.join()
 
-    def _synth_soniox(self, text, lang_code="en"):
+    def _synth_soniox(self, text, lang_code="en", voice=None):
         """TTS Soniox tts-rt-v1 -> PCM 24kHz 16-bit mono (trả phí ~$0.70/giờ, dùng KEY SONIOX sẵn có).
-        Trả thẳng PCM s16le 24kHz nên khớp pipeline (không cần decode/resample như Edge)."""
+        Trả thẳng PCM s16le 24kHz nên khớp pipeline (không cần decode/resample như Edge).
+        `voice` = giọng người dùng chọn ở dropdown; rỗng → SONIOX_TTS_VOICE/Adrian."""
         import httpx
         api_key = getattr(config, "SONIOX_API_KEY", "") or ""
-        voice = getattr(config, "SONIOX_TTS_VOICE", "") or "Adrian"
+        voice = voice or (getattr(config, "SONIOX_TTS_VOICE", "") or "Adrian")
         lang = lang_code if (lang_code and lang_code != "auto") else "en"
         body = {"model": "tts-rt-v1", "language": lang, "voice": voice,
                 "audio_format": "pcm_s16le", "sample_rate": 24000, "text": text}
