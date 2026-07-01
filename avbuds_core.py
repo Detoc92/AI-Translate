@@ -384,6 +384,7 @@ class Glossary:
         self.corrections = dict(corrections or {})  # {wrong_lower: right}
         self.meta = dict(meta or {})
         self._corr_compiled = []
+        self._known = None                          # cache set các dạng đã biết (lower)
         self._compile_corrections()
 
     @classmethod
@@ -486,6 +487,7 @@ class Glossary:
             return False
         self.corrections[wrong.lower()] = right
         self._compile_corrections()
+        self._known = None
         return True
 
     def add_term(self, en="", ko="", vi="", cat="custom"):
@@ -493,11 +495,49 @@ class Glossary:
         if not (en or ko or vi):
             return False
         self.terms.append({"en": en, "ko": ko, "vi": vi, "cat": cat})
+        self._known = None
         return True
+
+    # ---- Nhận biết từ ĐÃ có (cho tính năng GỢI Ý từ mới) ----
+    def known_set(self):
+        if self._known is None:
+            s = set()
+            for w in self.all_term_strings():
+                s.add(w.lower())
+            for k, v in self.corrections.items():
+                s.add(k.lower()); s.add(v.lower())
+            self._known = s
+        return self._known
+
+    def is_known(self, word):
+        return (word or "").strip().lower() in self.known_set()
 
     def counts(self):
         return {"terms": len(self.terms), "keep_original": len(self.keep_original),
                 "corrections": len(self.corrections)}
+
+
+# Viết tắt IN HOA thông dụng KHÔNG phải thuật ngữ (lọc bớt nhiễu khi gợi ý)
+_SUGG_STOP = {
+    "OK", "AI", "THE", "AND", "FOR", "YOU", "ARE", "NOT", "BUT", "ALL", "CAN",
+    "GET", "HAS", "WAS", "USB",  # USB đã nằm trong glossary keep_original -> is_known lọc nốt
+    "PM", "AM", "ID", "TV", "PC", "OS", "IT", "HR", "CEO", "CTO", "VN", "KR", "US",
+}
+
+
+def extract_candidate_terms(text):
+    """Rút 'ứng viên thuật ngữ' từ 1 đoạn (rẻ, không gọi API): viết tắt IN HOA (2–6 ký tự)
+    + token lẫn CHỮ và SỐ (mã/model như USB3, 2G4). Bên gọi lọc thêm bằng glossary.is_known."""
+    if not text:
+        return []
+    out = []
+    for m in re.findall(r"\b[A-Z][A-Z0-9]{1,5}\b", text):
+        if m not in _SUGG_STOP and not m.isdigit():
+            out.append(m)
+    for m in re.findall(r"\b[A-Za-z]{1,6}[0-9]+[A-Za-z0-9]*\b", text):
+        if not m.isdigit():
+            out.append(m)
+    return out
 
 
 # =====================================================================
@@ -629,6 +669,15 @@ def _selftest():
     check("correct_text khớp nguyên từ (không phá substring)", gl.correct_text("impeding") == "impeding")
     check("add_term tăng số lượng", gl.add_term(en="ferrite bead", vi="hạt ferrite") and gl.counts()["terms"] == 3)
     check("Glossary.load file thiếu -> rỗng", Glossary.load("__khong_ton_tai__.json").counts()["terms"] == 0)
+
+    print("== Suggestion: từ mới chưa có trong glossary ==")
+    cands = extract_candidate_terms("We put the BGA and NFC near the PCB, model USB3 board")
+    check("bắt được viết tắt lạ", "BGA" in cands and "NFC" in cands)
+    check("bắt được mã lẫn số", "USB3" in cands)
+    check("is_known thấy từ trong glossary", gl.is_known("PCB") and gl.is_known("impedance"))
+    check("is_known KHÔNG thấy từ lạ", not gl.is_known("BGA"))
+    check("lọc ứng viên: chỉ giữ từ chưa biết",
+          [c for c in cands if not gl.is_known(c)] and "PCB" not in [c for c in cands if not gl.is_known(c)])
 
     print(f"\n==== KẾT QUẢ: {passed} PASS / {failed} FAIL ====")
     return failed == 0

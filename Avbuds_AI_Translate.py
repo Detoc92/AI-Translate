@@ -22,7 +22,7 @@ import config
 from avbuds_core import (
     TranscriptEngine, RollingSummary, mock_summary_data,
     clean_protocol_tags, LANG_CODE_MAP, REPORT_SCHEMA,
-    build_markdown, seconds_to_mmss, Glossary,
+    build_markdown, seconds_to_mmss, Glossary, extract_candidate_terms,
 )
 
 
@@ -634,6 +634,13 @@ class App(ctk.CTk):
         # Kéo bản MỚI NHẤT từ GitHub ở luồng nền (không chặn UI); có mạng thì tự cập nhật.
         threading.Thread(target=self._refresh_glossary_from_cloud, daemon=True).start()
 
+        # GỢI Ý từ mới trong buổi họp (thuật ngữ chưa có trong glossary)
+        self.suggested_terms = {}       # term -> số lần xuất hiện
+        self._sugg_seen_out = 0         # con trỏ block luồng NÓI đã quét
+        self._sugg_seen_in = 0          # con trỏ block luồng NGHE đã quét
+        self._sugg_dismissed = set()    # từ đã bỏ qua (không gợi lại)
+        self.glossary_btn = None        # nút "📚..." để gắn badge số gợi ý
+
         # --- State cho TTS (đọc bản dịch → đẩy vào MIC ảo, hỗ trợ họp 2 chiều) ---
         self.tts_queue = queue.Queue()         # luồng RA: tiếng tôi → MIC ảo (người nghe)
         self.tts_queue_in = queue.Queue()      # luồng VÀO: tiếng đối tác → loa thật (tôi nghe)
@@ -830,9 +837,10 @@ class App(ctk.CTk):
         ctk.CTkButton(top_side, text="🖥️ Floating Subtitle", command=self.toggle_subtitle,
                       fg_color="#7C3AED", hover_color="#6D28D9", font=("Arial", 11, "bold")).pack(pady=5, padx=20, fill="x")
 
-        # TỪ CHUYÊN NGÀNH (glossary): xem/thêm từ + dạy từ nghe-sai (học & nhớ qua các phiên)
-        ctk.CTkButton(top_side, text="📚 Từ chuyên ngành", command=self.open_glossary_dialog,
-                      fg_color="#0E7490", hover_color="#155E75", font=("Arial", 11, "bold")).pack(pady=5, padx=20, fill="x")
+        # TỪ CHUYÊN NGÀNH (glossary): xem/thêm từ + dạy từ nghe-sai + gợi ý từ mới trong họp
+        self.glossary_btn = ctk.CTkButton(top_side, text="📚 Từ chuyên ngành", command=self.open_glossary_dialog,
+                      fg_color="#0E7490", hover_color="#155E75", font=("Arial", 11, "bold"))
+        self.glossary_btn.pack(pady=5, padx=20, fill="x")
 
         # ===== ĐỌC BẢN DỊCH CHO NGƯỜI NGHE (TTS → loa thật / MIC ảo) =====
         tts_frame = ctk.CTkFrame(top_side, fg_color="#0F172A", corner_radius=8)
@@ -1251,6 +1259,11 @@ class App(ctk.CTk):
         self.summary_feed = []
         self.sum_seen_out = 0
         self.sum_seen_in = 0
+        # Reset gợi ý từ mới cho phiên mới (giữ danh sách đã bỏ qua để không gợi lại)
+        self.suggested_terms = {}
+        self._sugg_seen_out = 0
+        self._sugg_seen_in = 0
+        self._update_glossary_badge()
         # Reset cache/độ-ổn-định cho pre-synth TTS (không giữ giọng synth của phiên cũ)
         with self._presynth_lock:
             self._tts_cache.clear()
@@ -2083,6 +2096,70 @@ class App(ctk.CTk):
                 logger.error(f"[GLOSSARY] Đẩy lên GitHub thất bại: {info}")
         threading.Thread(target=work, daemon=True).start()
 
+    # ---- GỢI Ý từ mới trong buổi họp ----
+    def _note_suggestion(self, term):
+        """Ghi nhận 1 ứng viên; True nếu là gợi ý MỚI (chưa biết, chưa bỏ qua)."""
+        if not term:
+            return False
+        if self.glossary.is_known(term) or term.lower() in self._sugg_dismissed:
+            return False
+        n = self.suggested_terms.get(term, 0) + 1
+        self.suggested_terms[term] = n
+        return n == 1
+
+    def _scan_suggestions(self):
+        """Quét block MỚI chốt (2 luồng) → gom thuật ngữ chưa có trong glossary. Rẻ, không API."""
+        changed = False
+        for eng, attr in ((self.engine, "_sugg_seen_out"), (self.engine_in, "_sugg_seen_in")):
+            blocks = eng.committed_blocks
+            i = getattr(self, attr)
+            while i < len(blocks):
+                b = blocks[i]
+                for txt in (b.get("orig", ""), b.get("trans", "")):
+                    for cand in extract_candidate_terms(txt):
+                        if self._note_suggestion(cand):
+                            changed = True
+                i += 1
+            setattr(self, attr, i)
+        if changed:
+            self._update_glossary_badge()
+
+    def _harvest_summary_terms(self, data):
+        """Gom essential_keywords do LLM chọn trong báo cáo summary → gợi ý nếu chưa có."""
+        try:
+            changed = False
+            for item in (data.get("detailed_discussion_ledger") or []):
+                for kw in (item.get("essential_keywords_and_terms") or []):
+                    kw = (kw or "").strip()
+                    if kw and 2 <= len(kw) <= 40 and self._note_suggestion(kw):
+                        changed = True
+            if changed:
+                self._update_glossary_badge()
+        except Exception:
+            pass
+
+    def _update_glossary_badge(self):
+        """Cập nhật số gợi ý trên nút 📚 + làm mới danh sách trong dialog nếu đang mở."""
+        n = len(getattr(self, "suggested_terms", {}))
+        if getattr(self, "glossary_btn", None) is not None:
+            try:
+                self.glossary_btn.configure(text=(f"📚 Từ chuyên ngành 💡{n}" if n else "📚 Từ chuyên ngành"))
+            except Exception:
+                pass
+        cb = getattr(self, "_glossary_refresh_cb", None)
+        if cb is not None:
+            try: cb()
+            except Exception: pass
+
+    @staticmethod
+    def _lang_of(word):
+        """Đoán ngôn ngữ của 1 từ để điền đúng ô: ko nếu có Hangul, vi nếu có dấu tiếng Việt, else en."""
+        if re.search(r"[가-힣]", word):
+            return "ko"
+        if re.search(r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]", word.lower()):
+            return "vi"
+        return "en"
+
     def open_glossary_dialog(self):
         """Cửa sổ xem/thêm thuật ngữ + DẠY từ nghe-sai→đúng. Lưu ngay vào glossary.json
         cạnh app (nhớ qua các phiên). Thuật ngữ mới áp dụng ở lần START kế; từ đã dạy
@@ -2092,7 +2169,7 @@ class App(ctk.CTk):
         win = ctk.CTkToplevel(self)
         self._glossary_win = win
         win.title("📚 Từ chuyên ngành")
-        win.geometry("460x600")
+        win.geometry("460x760")
         win.configure(fg_color=COLOR_BG)
         win.after(200, lambda: win.attributes("-topmost", True))
 
@@ -2104,8 +2181,7 @@ class App(ctk.CTk):
             count_lbl.configure(text=f"📚 {c['terms']} thuật ngữ · {c['keep_original']} tên riêng · "
                                      f"{c['corrections']} từ đã học")
 
-        # cho phép luồng nền cập nhật nhãn khi kéo cloud xong; gỡ khi đóng cửa sổ
-        self._glossary_refresh_cb = refresh_counts
+        # (self._glossary_refresh_cb được gán refresh_all ở cuối, sau khi render_suggestions có mặt)
 
         def _on_close():
             self._glossary_refresh_cb = None
@@ -2120,6 +2196,47 @@ class App(ctk.CTk):
 
         ctk.CTkButton(win, text="🔄 Đồng bộ từ cloud (GitHub)", command=do_sync,
                       fg_color="#0E7490", hover_color="#155E75", font=("Arial", 11, "bold")).pack(pady=(0, 4), padx=16, fill="x")
+
+        # --- GỢI Ý từ mới phát hiện trong buổi họp (chưa có trong glossary) ---
+        fsg = ctk.CTkFrame(win, fg_color="#0F172A", corner_radius=8)
+        fsg.pack(pady=6, padx=16, fill="x")
+        ctk.CTkLabel(fsg, text="💡 Gợi ý từ mới (xuất hiện trong họp):", text_color="#FBBF24",
+                     font=("Arial", 11, "bold")).pack(pady=(8, 2), padx=10, anchor="w")
+        sugg_list = ctk.CTkScrollableFrame(fsg, fg_color="#0B1220", height=130)
+        sugg_list.pack(pady=(0, 8), padx=10, fill="x")
+
+        def add_suggestion(term):
+            lang = self._lang_of(term)
+            if self.glossary.add_term(**{lang: term}):
+                self.glossary.save(glossary_cache_path())
+                self.suggested_terms.pop(term, None)
+                self._sugg_dismissed.add(term.lower())
+                logger.info(f"📚 Thêm từ gợi ý: {term} ({lang}).")
+                self._cloud_push_glossary(f"add suggested term: {term}")
+                refresh_counts(); render_suggestions(); self._update_glossary_badge()
+
+        def dismiss_suggestion(term):
+            self.suggested_terms.pop(term, None)
+            self._sugg_dismissed.add(term.lower())
+            render_suggestions(); self._update_glossary_badge()
+
+        def render_suggestions():
+            for w in sugg_list.winfo_children():
+                w.destroy()
+            items = sorted(self.suggested_terms.items(), key=lambda kv: -kv[1])
+            if not items:
+                ctk.CTkLabel(sugg_list, text="(chưa có — sẽ hiện khi có thuật ngữ lạ lúc họp)",
+                             text_color=COLOR_TEXT_DRAFT, font=("Arial", 9)).pack(anchor="w", padx=4, pady=4)
+                return
+            for term, freq in items[:40]:
+                row = ctk.CTkFrame(sugg_list, fg_color="transparent")
+                row.pack(fill="x", pady=1)
+                ctk.CTkButton(row, text="✕", width=26, height=24, fg_color="#7F1D1D", hover_color="#9F1239",
+                              font=("Arial", 10), command=lambda t=term: dismiss_suggestion(t)).pack(side="right", padx=(2, 0))
+                ctk.CTkButton(row, text="➕", width=32, height=24, fg_color=COLOR_BTN,
+                              font=("Arial", 11, "bold"), command=lambda t=term: add_suggestion(t)).pack(side="right", padx=2)
+                ctk.CTkLabel(row, text=f"{term}   ×{freq}", text_color=COLOR_TEXT_MAIN,
+                             font=("Arial", 11), anchor="w").pack(side="left", padx=4)
 
         def _entry(parent, ph):
             e = ctk.CTkEntry(parent, placeholder_text=ph, fg_color="#0F172A", font=("Arial", 11))
@@ -2178,7 +2295,10 @@ class App(ctk.CTk):
                           "cho mọi máy. Chưa có token → chỉ lưu cục bộ (gửi admin cập nhật repo).",
                      text_color=COLOR_TEXT_DRAFT, font=("Arial", 9), justify="left").pack(pady=(6, 8), padx=16, anchor="w")
 
-        refresh_counts()
+        def refresh_all():
+            refresh_counts(); render_suggestions()
+        self._glossary_refresh_cb = refresh_all   # luồng nền/scan cập nhật cả nhãn lẫn danh sách gợi ý
+        refresh_all()
 
     def update_ui_loop(self):
         while not ui_queue.empty():
@@ -2242,10 +2362,11 @@ class App(ctk.CTk):
             # --- ĐỌC BẢN DỊCH RA MIC ẢO (TTS) khi có block mới chốt ---
             self._pump_tts()
 
-            # Tóm tắt tự động (incremental, gpt-4o-mini) mỗi 5 phút
-            if current_time - self.last_summary_time >= 300:
-                self.generate_summary(final=False)
-                self.last_summary_time = current_time
+            # --- GỢI Ý TỪ MỚI: quét thuật ngữ chưa có trong glossary (rẻ, không gọi API) ---
+            self._scan_suggestions()
+
+            # KHÔNG tự tóm tắt theo chu kỳ nữa (tốn token). Summary chỉ chạy khi bấm nút
+            # 📊 SUMMARY hoặc khi ⏹️ STOP (bản final). Xem generate_summary().
 
             self.after(50, self.update_ui_loop)
 
@@ -2558,6 +2679,7 @@ class App(ctk.CTk):
 
     def render_report(self, data):
         """Đổ dữ liệu JSON biên bản lên analysis_box (luôn chạy trên main thread qua self.after)."""
+        self._harvest_summary_terms(data)   # gom từ khóa LLM chọn → gợi ý từ mới
         self.analysis_box.delete("1.0", "end")
         try:
             txt = self.analysis_box._textbox
